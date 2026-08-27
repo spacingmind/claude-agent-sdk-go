@@ -11,8 +11,6 @@ This is **not** the [Agent Client Protocol](https://agentclientprotocol.com) —
 
 There's no official Go SDK from Anthropic yet (only [TypeScript](https://github.com/anthropics/claude-agent-sdk-typescript) and [Python](https://github.com/anthropics/claude-agent-sdk-python)). This package's wire-protocol behavior — the CLI flags, the JSON message shapes, the `can_use_tool` control-request/response permission handshake — is verified against the real, open-source Python SDK's implementation, not guessed from CLI docs.
 
-Extracted from [spacingmind/smind](https://github.com/spacingmind/smind), a self-hosted coding-agent platform, where it's used to drive Claude Code as one of several pluggable agent backends.
-
 ## Install
 
 ```sh
@@ -215,7 +213,7 @@ See [godoc](https://pkg.go.dev/github.com/spacingmind/claude-agent-sdk-go) for t
 
 ## Status
 
-Used in production by [smind](https://github.com/spacingmind/smind). This started as a small extraction (~700 lines, one-shot prompts only) and has grown well past that original scope: it now covers most of the Python/TypeScript reference SDKs' surface per an internal parity audit — the persistent streaming client, the full control-protocol handshake, hooks, local session resume/listing, and the in-process SDK-MCP tool bridge documented above. Still pre-`v1`: the public API may still shift.
+This started as a small extraction (~700 lines, one-shot prompts only) and has grown well past that original scope: it now covers most of the Python/TypeScript reference SDKs' surface per an internal parity audit — the persistent streaming client, the full control-protocol handshake, hooks, local session resume/listing, and the in-process SDK-MCP tool bridge documented above. Still pre-`v1`: the public API may still shift.
 
 Known gaps: local-disk session resume only (no pluggable external session store), and no interactive/human-in-the-loop permission UI — the `PermissionPolicy` interface is the seam one plugs into.
 
