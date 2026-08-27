@@ -8,6 +8,7 @@ package claudecode
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -67,6 +68,66 @@ type thinkingConfig struct {
 	display      string
 }
 
+// skillsConfig captures the two wire forms of the skills option: an
+// explicit list of skill names, or the "all" sentinel (which sends no
+// "skills" key on initialize but still triggers allowedTools and
+// setting-sources defaulting).
+type skillsConfig struct {
+	all  bool
+	list []string
+}
+
+// AgentDefinition configures one named subagent, sent to the CLI in the
+// initialize control request's "agents" payload. Field names map to
+// Python's already-camelCase wire keys; zero-value fields are omitted.
+type AgentDefinition struct {
+	Description     string   `json:"description,omitempty"`
+	Prompt          string   `json:"prompt,omitempty"`
+	Tools           []string `json:"tools,omitempty"`
+	DisallowedTools []string `json:"disallowedTools,omitempty"`
+	Model           string   `json:"model,omitempty"`
+	Skills          []string `json:"skills,omitempty"`
+	Memory          string   `json:"memory,omitempty"`
+	McpServers      []string `json:"mcpServers,omitempty"`
+	InitialPrompt   string   `json:"initialPrompt,omitempty"`
+	MaxTurns        int      `json:"maxTurns,omitempty"`
+	Background      bool     `json:"background,omitempty"`
+	Effort          string   `json:"effort,omitempty"`
+	PermissionMode  string   `json:"permissionMode,omitempty"`
+}
+
+// SandboxSettings is the "sandbox" subtree of the CLI's --settings value.
+// Pointer/omitempty throughout so an unset field never appears on the wire.
+type SandboxSettings struct {
+	Enabled                   *bool                    `json:"enabled,omitempty"`
+	AutoAllowBashIfSandboxed  *bool                    `json:"autoAllowBashIfSandboxed,omitempty"`
+	ExcludedCommands          []string                 `json:"excludedCommands,omitempty"`
+	AllowUnsandboxedCommands  *bool                    `json:"allowUnsandboxedCommands,omitempty"`
+	Network                   *SandboxNetworkConfig    `json:"network,omitempty"`
+	IgnoreViolations          *SandboxIgnoreViolations `json:"ignoreViolations,omitempty"`
+	EnableWeakerNestedSandbox *bool                    `json:"enableWeakerNestedSandbox,omitempty"`
+}
+
+// SandboxNetworkConfig is the "network" subtree of SandboxSettings.
+type SandboxNetworkConfig struct {
+	AllowedDomains          []string `json:"allowedDomains,omitempty"`
+	DeniedDomains           []string `json:"deniedDomains,omitempty"`
+	AllowManagedDomainsOnly *bool    `json:"allowManagedDomainsOnly,omitempty"`
+	AllowUnixSockets        *bool    `json:"allowUnixSockets,omitempty"`
+	AllowAllUnixSockets     *bool    `json:"allowAllUnixSockets,omitempty"`
+	AllowLocalBinding       *bool    `json:"allowLocalBinding,omitempty"`
+	AllowMachLookup         *bool    `json:"allowMachLookup,omitempty"`
+	HTTPProxyPort           *int     `json:"httpProxyPort,omitempty"`
+	SOCKSProxyPort          *int     `json:"socksProxyPort,omitempty"`
+}
+
+// SandboxIgnoreViolations is the "ignoreViolations" subtree of
+// SandboxSettings.
+type SandboxIgnoreViolations struct {
+	File    []string `json:"file,omitempty"`
+	Network []string `json:"network,omitempty"`
+}
+
 type options struct {
 	permissionMode   string
 	permissionPolicy PermissionPolicy
@@ -75,33 +136,38 @@ type options struct {
 	extraEnv         []string
 	closeGracePeriod time.Duration
 
-	systemPrompt         *systemPrompt
-	tools                *toolsConfig
-	allowedTools         []string
-	maxTurns             int
-	maxBudgetUSD         *float64
-	disallowedTools      []string
-	taskBudget           *int
-	model                string
-	fallbackModel        string
-	betas                []string
-	permissionPromptTool string
-	settings             string
-	addDirs              []string
-	mcpConfig            string
-	sdkMcpServerList     []*SdkMcpServer
-	includePartial       bool
-	includeHookEvents    bool
-	strictMcpConfig      bool
-	settingSources       []string
-	pluginDirs           []string
-	extraArgs            map[string]*string
-	thinking             *thinkingConfig
-	maxThinkingTokens    *int
-	effort               string
-	jsonSchema           string
-	env                  []string
-	hooks                map[HookEvent][]HookMatcher
+	systemPrompt            *systemPrompt
+	tools                   *toolsConfig
+	allowedTools            []string
+	maxTurns                int
+	maxBudgetUSD            *float64
+	disallowedTools         []string
+	taskBudget              *int
+	model                   string
+	fallbackModel           string
+	betas                   []string
+	permissionPromptTool    string
+	settings                string
+	addDirs                 []string
+	mcpConfig               string
+	sdkMcpServerList        []*SdkMcpServer
+	includePartial          bool
+	includeHookEvents       bool
+	strictMcpConfig         bool
+	settingSources          []string
+	settingSourcesSet       bool
+	pluginDirs              []string
+	extraArgs               map[string]*string
+	thinking                *thinkingConfig
+	maxThinkingTokens       *int
+	effort                  string
+	jsonSchema              string
+	env                     []string
+	hooks                   map[HookEvent][]HookMatcher
+	agents                  map[string]AgentDefinition
+	skills                  *skillsConfig
+	sandbox                 *SandboxSettings
+	enableFileCheckpointing bool
 
 	continueConversation bool
 	resume               string
@@ -301,7 +367,10 @@ func WithStrictMCPConfig() Option {
 // be parsed as a separate flag). Not calling this option omits the flag
 // entirely -- the CLI's own default applies.
 func WithSettingSources(sources ...string) Option {
-	return func(o *options) { o.settingSources = sources }
+	return func(o *options) {
+		o.settingSources = sources
+		o.settingSourcesSet = true
+	}
 }
 
 // WithPluginDirs loads local plugins, sending --plugin-dir <path> once per
@@ -393,6 +462,53 @@ func WithEnv(env ...string) Option {
 // needed here.
 func WithHooks(hooks map[HookEvent][]HookMatcher) Option {
 	return func(o *options) { o.hooks = hooks }
+}
+
+// WithAgents registers named subagent definitions, sent to the CLI in the
+// initialize control request's "agents" payload (omitted entirely when no
+// agents are registered).
+func WithAgents(agents map[string]AgentDefinition) Option {
+	return func(o *options) { o.agents = agents }
+}
+
+// WithSkills enables the named skills. Besides carrying the list in the
+// initialize request's "skills" payload, it auto-configures two other
+// things (matching the Python SDK's _apply_skills_defaults): each skill
+// gains a "Skill(<name>)" entry in --allowedTools, and --setting-sources
+// defaults to "user,project" unless WithSettingSources was called
+// explicitly.
+func WithSkills(skills ...string) Option {
+	return func(o *options) { o.skills = &skillsConfig{list: skills} }
+}
+
+// WithAllSkills enables every available skill: no "skills" key is sent on
+// initialize (Python's "all" literal sends nothing), but the defaulting
+// side effects still apply -- a single "Skill" entry is added to
+// --allowedTools and --setting-sources defaults to "user,project" unless
+// set explicitly.
+func WithAllSkills() Option {
+	return func(o *options) { o.skills = &skillsConfig{all: true} }
+}
+
+// WithSandbox merges the given sandbox settings into --settings as a
+// "sandbox" key: parsed-and-merged with an inline-JSON WithSettings value
+// (sandbox wins on collision), or emitted alone when WithSettings wasn't
+// called. A non-JSON WithSettings value (a file path) cannot be merged
+// with and errors at New() time.
+func WithSandbox(s SandboxSettings) Option {
+	return func(o *options) { o.sandbox = &s }
+}
+
+// WithEnableFileCheckpointing sets
+// CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true on the CLI subprocess
+// (merged via the same env path as WithEnv; a caller-supplied WithEnv
+// value for this key still wins). Note: this alone does not populate
+// UserMessage.UUID values to pass to RewindFiles -- callers also need
+// WithExtraArgs(map[string]*string{"replay-user-messages": nil}), which
+// exists independently (matching the Python reference's split between the
+// two settings). It is deliberately not auto-added here.
+func WithEnableFileCheckpointing() Option {
+	return func(o *options) { o.enableFileCheckpointing = true }
 }
 
 // WithContinueConversation resumes the most recent conversation in the
@@ -525,13 +641,23 @@ func New(worktreePath string, opts ...Option) (*Client, error) {
 
 	o.mcpConfig = mcpConfig
 
+	settings, err := resolveSettings(&o)
+	if err != nil {
+		return nil, err
+	}
+	o.settings = settings
+
 	args := buildArgs(&o)
 
 	// WithEnv merges onto the inherited environment (see buildEnv);
 	// withExtraEnv (test-only) keeps its wholesale-replace semantics.
 	env := o.extraEnv
 	if o.env != nil {
-		env = buildEnv(o.env)
+		caller := o.env
+		if o.enableFileCheckpointing && !hasEnvKey(caller, "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING") {
+			caller = append([]string{"CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true"}, caller...)
+		}
+		env = buildEnv(caller)
 	}
 
 	tr, err := startTransport(worktreePath, o.cliPath, args, env, o.logWriter)
@@ -564,7 +690,9 @@ func New(worktreePath string, opts ...Option) (*Client, error) {
 	// only the IDs travel on the wire -- the callbacks stay Go-side, looked
 	// up by ID when hook_callback requests arrive.
 	var initExtra map[string]any
-
+	if len(o.hooks) > 0 || len(o.agents) > 0 || skillsListActive(o.skills) {
+		initExtra = map[string]any{}
+	}
 	if len(o.hooks) > 0 {
 		hooksPayload := map[string][]map[string]any{}
 		counter := 0
@@ -592,8 +720,13 @@ func New(worktreePath string, opts ...Option) (*Client, error) {
 				hooksPayload[string(event)] = append(hooksPayload[string(event)], entry)
 			}
 		}
-
-		initExtra = map[string]any{"hooks": hooksPayload}
+		initExtra["hooks"] = hooksPayload
+	}
+	if len(o.agents) > 0 {
+		initExtra["agents"] = o.agents
+	}
+	if skillsListActive(o.skills) {
+		initExtra["skills"] = o.skills.list
 	}
 
 	if _, err := c.sendControlRequest(context.Background(), "initialize", initExtra); err != nil {
@@ -636,8 +769,9 @@ func buildArgs(o *options) []string { //nolint:gocyclo,funlen  // flat one-flag-
 		}
 	}
 
-	if len(o.allowedTools) > 0 {
-		args = append(args, "--allowedTools", strings.Join(o.allowedTools, ","))
+	allowed := effectiveAllowedTools(o)
+	if len(allowed) > 0 {
+		args = append(args, "--allowedTools", strings.Join(allowed, ","))
 	}
 
 	if o.maxTurns > 0 {
@@ -697,11 +831,20 @@ func buildArgs(o *options) []string { //nolint:gocyclo,funlen  // flat one-flag-
 	if o.strictMcpConfig {
 		args = append(args, "--strict-mcp-config")
 	}
-
-	if o.settingSources != nil {
+	sources := o.settingSources
+	if !o.settingSourcesSet && skillsActive(o.skills) {
+		// Python's _apply_skills_defaults: skills need user/project
+		// settings loaded, so default --setting-sources only when the
+		// caller didn't choose sources themselves.
+		sources = []string{"user", "project"}
+	}
+	if o.settingSourcesSet || sources != nil {
 		// Equals form so a source name can never be parsed as a separate
-		// flag, mirroring the Python SDK's guard.
-		args = append(args, "--setting-sources="+strings.Join(o.settingSources, ","))
+		// flag, mirroring the Python SDK's guard. Emitted whenever
+		// WithSettingSources was called -- an explicit zero-arg call
+		// sends --setting-sources= -- or when skills defaulted it; never
+		// otherwise.
+		args = append(args, "--setting-sources="+strings.Join(sources, ","))
 	}
 
 	for _, dir := range o.pluginDirs {
@@ -771,6 +914,107 @@ func buildArgs(o *options) []string { //nolint:gocyclo,funlen  // flat one-flag-
 	args = append(args, "--input-format", "stream-json")
 
 	return args
+}
+
+// skillsActive reports whether any skills option was set to a meaningful
+// value (the all-sentinel, or a non-empty list) and therefore the
+// auto-configuration side effects apply.
+func skillsActive(sk *skillsConfig) bool {
+	return sk != nil && (sk.all || len(sk.list) > 0)
+}
+
+// skillsListActive reports whether the explicit-list form carries at
+// least one skill and so initialize's "skills" key must be sent (the
+// all-sentinel never sends it).
+func skillsListActive(sk *skillsConfig) bool {
+	return sk != nil && len(sk.list) > 0
+}
+
+// effectiveAllowedTools unions the caller's allowed tools with the
+// skill-derived entries ("Skill" for all-skills, "Skill(<name>)" per named
+// skill), without duplicating entries the caller already listed.
+func effectiveAllowedTools(o *options) []string {
+	allowed := o.allowedTools
+	if !skillsActive(o.skills) {
+		return allowed
+	}
+	var derived []string
+	if o.skills.all {
+		derived = []string{"Skill"}
+	} else {
+		for _, name := range o.skills.list {
+			derived = append(derived, "Skill("+name+")")
+		}
+	}
+	for _, d := range derived {
+		if !containsString(allowed, d) {
+			allowed = append(allowed, d)
+		}
+	}
+	return allowed
+}
+
+func hasEnvKey(env []string, key string) bool {
+	for _, kv := range env {
+		if strings.HasPrefix(kv, key+"=") {
+			return true
+		}
+	}
+	return false
+}
+
+func containsString(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveSettings computes the final --settings value: without sandbox
+// settings it is o.settings passed through unchanged; otherwise the
+// marshaled SandboxSettings is added as a "sandbox" key -- merged into an
+// inline-JSON WithSettings value (overwriting any existing "sandbox" key)
+// or emitted alone. A non-JSON WithSettings value cannot be merged into,
+// so that combination is an error.
+func resolveSettings(o *options) (string, error) {
+	if o.sandbox == nil {
+		return o.settings, nil
+	}
+	sandboxJSON, err := json.Marshal(*o.sandbox)
+	if err != nil {
+		return "", fmt.Errorf("claudecode: marshal sandbox settings: %w", err)
+	}
+	merged := map[string]json.RawMessage{}
+	if o.settings != "" {
+		if err := json.Unmarshal([]byte(o.settings), &merged); err != nil {
+			return "", fmt.Errorf("claudecode: WithSettings value is not inline JSON (a file path?) and cannot be merged with WithSandbox: %w", err)
+		}
+	}
+	merged["sandbox"] = sandboxJSON
+	out, err := json.Marshal(merged)
+	if err != nil {
+		return "", fmt.Errorf("claudecode: marshal merged settings: %w", err)
+	}
+	return string(out), nil
+}
+
+// QueryOnce runs a single prompt through a fresh Client: New, Prompt,
+// Close (deferred, so it runs whether Prompt succeeded or errored). Pure
+// sugar over the three calls -- Python's module-level query().
+func QueryOnce(ctx context.Context, worktreePath, text string, updates chan<- Message, opts ...Option) (ResultMessage, error) {
+	c, err := New(worktreePath, opts...)
+	if err != nil {
+		// Prompt's "updates is always closed" guarantee must hold for
+		// QueryOnce's own return paths too -- a consumer ranging over
+		// updates must see it close even when New failed and Prompt never
+		// ran.
+		close(updates)
+		return ResultMessage{}, err
+	}
+	defer c.Close()
+	return c.Prompt(ctx, text, updates)
 }
 
 type wireUserTurn struct {

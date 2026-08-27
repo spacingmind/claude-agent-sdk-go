@@ -255,6 +255,7 @@ func runFakeCLI() {
 		dump, err := json.Marshal(map[string]any{
 			"args": os.Args[1:],
 			"env":  os.Environ(),
+			"pid":  os.Getpid(),
 		})
 		if err != nil {
 			panic(err)
@@ -275,12 +276,30 @@ func runFakeCLI() {
 		// control requests have been seen, reports the recorded lines via
 		// the result message (prompted by a final user turn if one was
 		// sent) so tests can assert the exact JSON the client sent.
-		ackInitialize()
-
-		maxReqs, _ := strconv.Atoi(os.Getenv("CLAUDECODE_FAKE_MAX_LINES"))
-
+		// With CLAUDECODE_FAKE_RECORD_INIT=1 the initialize request itself
+		// is recorded too (and counts toward MAX_LINES), so tests can
+		// assert the initialize payload's exact shape.
+		recordInit := os.Getenv("CLAUDECODE_FAKE_RECORD_INIT") == "1"
 		var lines []string
-
+		if recordInit {
+			if !stdin.Scan() {
+				panic("fake cli: stdin closed before initialize")
+			}
+			lines = append(lines, stdin.Text())
+			var initEnv struct {
+				RequestID string `json:"request_id"`
+			}
+			if err := json.Unmarshal(stdin.Bytes(), &initEnv); err != nil {
+				panic(fmt.Sprintf("fake cli: unmarshal initialize: %v", err))
+			}
+			writeLine(controlResponseLine(initEnv.RequestID, map[string]any{"success": true}))
+		} else {
+			ackInitialize()
+		}
+		maxReqs, _ := strconv.Atoi(os.Getenv("CLAUDECODE_FAKE_MAX_LINES"))
+		if recordInit {
+			maxReqs--
+		}
 		seen := 0
 		for seen < maxReqs && stdin.Scan() {
 			lines = append(lines, stdin.Text())
