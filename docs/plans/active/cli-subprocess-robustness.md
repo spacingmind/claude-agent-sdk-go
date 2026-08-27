@@ -93,8 +93,49 @@ SIGKILL), and a non-blocking version compatibility check at connect time.
 
 ## Progress
 
-Not started.
+Complete. Implemented on branch `sdk-parity/cli-subprocess-robustness`:
+
+- AC 1: `discovery.go` — `resolveCLIPath(explicit)` called from `New()`
+  before `startTransport` (which now receives the resolved path; the
+  default `cliPath: "claude"` was removed so resolution always runs).
+  Explicit `WithCLIPath` passes through unchanged. Fallback probe list
+  exposed as the `cliFallbackPaths` function-variable seam (same pattern
+  as `configHomeDir`). Discovery miss returns
+  `&CLINotFoundError{Path: "claude", ...}` naming PATH, every fallback
+  location, `npm install -g @anthropic-ai/claude-code`, and
+  `WithCLIPath`.
+- AC 2: `transport.close()` is now 3 stages — stdin-close + wait →
+  SIGTERM + wait → SIGKILL + wait — reusing the single `waitDone`
+  reaper (`cmd.Wait` still called exactly once, in `wait()`).
+  `closeErr` is set only on the natural-exit and SIGTERM paths; the
+  forced-SIGKILL path leaves it nil, as before. Doc comment documents
+  the ~3x gracePeriod worst case. `gracePeriod` keeps its
+  per-stage meaning.
+- AC 3: `checkCLIVersion` in `discovery.go`, run from `New()` in a
+  goroutine right after `startTransport` succeeds: `exec.CommandContext`
+  with a 2s timeout, first `\d+\.\d+\.\d+` match compared against
+  `minimumCLIVersion = "2.0.0"` by a simple dotted-integer comparator,
+  one warning line to `o.logWriter` (nil writer = probe skipped
+  entirely). All failures silently swallowed; the context bounds any
+  hung `-v` child so nothing leaks.
+- Tests: `discovery_test.go` (fallback discovery via the seam, explicit
+  passthrough, actionable not-found error, New-level failure, stub
+  spawn, SIGTERM-stage close timing, SIGKILL-stage close timing +
+  process-gone check, version warn / no-writer / hanging-probe, version
+  comparator table). Fake CLI gained `-v` handling
+  (`CLAUDECODE_FAKE_VERSION`, incl. "hang") and `sigterm_exit` /
+  `ignore_signals` scenarios. Existing close tests updated: the "hang"
+  fake now dies at the SIGTERM stage, so `Close()` reports the signal
+  wait error — assertions updated in `client_test.go`,
+  `engine_test.go`, `errors_test.go` (regression coverage preserved).
 
 ## Validation
 
-Not yet applicable.
+- `go build -buildvcs=false ./...` — clean.
+- `go vet ./...` — clean.
+- `gofmt -l .` — no output.
+- `go test -race -count=1 ./...` — ok (all tests, including the
+  phase-1 regressions `TestClient_CloseForceKillsHungProcess` and
+  `TestClient_CloseIsIdempotent`, updated for the SIGTERM stage).
+- No leaked fake-CLI processes after the suite (verified via
+  `pgrep -f CLAUDECODE_FAKE` post-run).

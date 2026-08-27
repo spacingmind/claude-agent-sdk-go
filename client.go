@@ -623,7 +623,6 @@ func New(worktreePath string, opts ...Option) (*Client, error) {
 	o := options{
 		permissionMode:   "default",
 		permissionPolicy: AutoDenyPolicy{},
-		cliPath:          "claude",
 		closeGracePeriod: defaultCloseGracePeriod,
 	}
 	for _, opt := range opts {
@@ -665,10 +664,19 @@ func New(worktreePath string, opts ...Option) (*Client, error) {
 		env = buildEnv(caller)
 	}
 
-	tr, err := startTransport(worktreePath, o.cliPath, args, env, o.logWriter)
+	resolvedCLIPath, err := resolveCLIPath(o.cliPath)
 	if err != nil {
 		return nil, err
 	}
+
+	tr, err := startTransport(worktreePath, resolvedCLIPath, args, env, o.logWriter)
+	if err != nil {
+		return nil, err
+	}
+
+	// Advisory version probe: best-effort, never blocks or fails New --
+	// bounded by its own 2s context even if the -v invocation hangs.
+	go checkCLIVersion(resolvedCLIPath, env, o.logWriter)
 
 	baseCtx, baseCancel := context.WithCancel(context.Background())
 
