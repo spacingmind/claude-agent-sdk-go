@@ -100,6 +100,7 @@ type options struct {
 	effort               string
 	jsonSchema           string
 	env                  []string
+	hooks                map[HookEvent][]HookMatcher
 }
 
 // WithPermissionMode sets the CLI's --permission-mode flag (e.g. "default",
@@ -365,6 +366,15 @@ func WithEnv(env ...string) Option {
 	return func(o *options) { o.env = env }
 }
 
+// WithHooks registers hook callbacks per HookEvent. Matchers registered on
+// the same event fire concurrently when the CLI invokes more than one for
+// that event -- callback dispatch already runs each inbound control
+// request in its own goroutine, so no additional concurrency handling is
+// needed here.
+func WithHooks(hooks map[HookEvent][]HookMatcher) Option {
+	return func(o *options) { o.hooks = hooks }
+}
+
 // withExtraEnv and withCloseGracePeriod are test-only knobs (unexported: no
 // production caller needs to override the subprocess environment or the
 // close grace period, but the fake-CLI test harness needs both).
@@ -461,8 +471,36 @@ func New(worktreePath string, opts ...Option) (*Client, error) {
 	go c.readLoop()
 
 	// The control channel must be initialized before the CLI accepts any
-	// prompt; a failed handshake is a construction failure.
-	if _, err := c.sendControlRequest(context.Background(), "initialize", nil); err != nil {
+	// prompt; a failed handshake is a construction failure. Registered hook
+	// callbacks are minted hook_<n> IDs here (single-threaded: the read
+	// loop can't receive a hook_callback before initialize completes) and
+	// only the IDs travel on the wire -- the callbacks stay Go-side, looked
+	// up by ID when hook_callback requests arrive.
+	var initExtra map[string]any
+	if len(o.hooks) > 0 {
+		hooksPayload := map[string][]map[string]any{}
+		counter := 0
+		for event, matchers := range o.hooks {
+			for _, m := range matchers {
+				var ids []string
+				for _, cb := range m.Hooks {
+					id := fmt.Sprintf("hook_%d", counter)
+					counter++
+					c.hookMu.Lock()
+					c.hookCallbacks[id] = cb
+					c.hookMu.Unlock()
+					ids = append(ids, id)
+				}
+				entry := map[string]any{"matcher": m.Matcher, "hookCallbackIds": ids}
+				if m.Timeout > 0 {
+					entry["timeout"] = m.Timeout.Seconds()
+				}
+				hooksPayload[string(event)] = append(hooksPayload[string(event)], entry)
+			}
+		}
+		initExtra = map[string]any{"hooks": hooksPayload}
+	}
+	if _, err := c.sendControlRequest(context.Background(), "initialize", initExtra); err != nil {
 		_ = c.Close()
 		return nil, fmt.Errorf("claudecode: initialize: %w", err)
 	}
