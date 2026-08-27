@@ -22,6 +22,56 @@ type CanUseToolRequest struct {
 	AgentID               string
 }
 
+// PermissionRuleValue is one rule entry inside a rules-variant
+// PermissionUpdate. RuleContent is omitted from the wire when empty.
+type PermissionRuleValue struct {
+	ToolName    string
+	RuleContent string // empty = omitted on the wire
+}
+
+// PermissionUpdate is a typed session permission update, matching the
+// Python reference SDK's PermissionUpdate. Only the fields relevant to
+// Type are sent on the wire (see MarshalJSON); irrelevant fields set on
+// the Go struct are silently dropped, not validated.
+type PermissionUpdate struct {
+	Type        string                // "addRules" | "replaceRules" | "removeRules" | "setMode" | "addDirectories" | "removeDirectories"
+	Rules       []PermissionRuleValue // addRules/replaceRules/removeRules only
+	Behavior    string                // "allow" | "deny" | "ask"; rules-variants only
+	Mode        string                // setMode only
+	Directories []string              // addDirectories/removeDirectories only
+	Destination string                // optional on every variant
+}
+
+// MarshalJSON emits only the fields relevant to Type, mirroring the
+// Python reference's to_dict().
+func (u PermissionUpdate) MarshalJSON() ([]byte, error) {
+	m := map[string]any{"type": u.Type}
+
+	switch u.Type {
+	case "addRules", "replaceRules", "removeRules":
+		rules := make([]map[string]any, 0, len(u.Rules))
+		for _, r := range u.Rules {
+			rm := map[string]any{"toolName": r.ToolName}
+			if r.RuleContent != "" {
+				rm["ruleContent"] = r.RuleContent
+			}
+			rules = append(rules, rm)
+		}
+		m["rules"] = rules
+		m["behavior"] = u.Behavior
+	case "setMode":
+		m["mode"] = u.Mode
+	case "addDirectories", "removeDirectories":
+		m["directories"] = u.Directories
+	}
+
+	if u.Destination != "" {
+		m["destination"] = u.Destination
+	}
+
+	return json.Marshal(m)
+}
+
 // PermissionPolicy decides can_use_tool control requests the CLI sends
 // mid-turn. updatedInput, when non-nil on an allow decision, replaces the
 // tool's input before it runs; denyMessage is surfaced to the model as the
@@ -31,7 +81,7 @@ type CanUseToolRequest struct {
 // No UI exists yet to drive this decision interactively -- this interface
 // is the seam a future UI-backed implementation plugs into.
 type PermissionPolicy interface {
-	Decide(ctx context.Context, req CanUseToolRequest) (allow bool, updatedInput map[string]any, denyMessage string, updatedPermissions []map[string]any, interrupt bool, err error)
+	Decide(ctx context.Context, req CanUseToolRequest) (allow bool, updatedInput map[string]any, denyMessage string, updatedPermissions []PermissionUpdate, interrupt bool, err error)
 }
 
 // AutoApprovePolicy allows every tool use unchanged. Useful for exercising
@@ -40,7 +90,7 @@ type AutoApprovePolicy struct{}
 
 // Decide implements PermissionPolicy: always allow, passing the request input
 // through unchanged.
-func (AutoApprovePolicy) Decide(_ context.Context, req CanUseToolRequest) (bool, map[string]any, string, []map[string]any, bool, error) {
+func (AutoApprovePolicy) Decide(_ context.Context, req CanUseToolRequest) (bool, map[string]any, string, []PermissionUpdate, bool, error) {
 	return true, req.Input, "", nil, false, nil
 }
 
@@ -50,7 +100,7 @@ func (AutoApprovePolicy) Decide(_ context.Context, req CanUseToolRequest) (bool,
 type AutoDenyPolicy struct{}
 
 // Decide implements PermissionPolicy: always deny with a fixed message.
-func (AutoDenyPolicy) Decide(_ context.Context, _ CanUseToolRequest) (bool, map[string]any, string, []map[string]any, bool, error) {
+func (AutoDenyPolicy) Decide(_ context.Context, _ CanUseToolRequest) (bool, map[string]any, string, []PermissionUpdate, bool, error) {
 	return false, nil, "denied: no permission UI is wired up yet", nil, false, nil
 }
 

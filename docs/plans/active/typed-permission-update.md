@@ -73,8 +73,28 @@ that as a proper Go type with custom JSON marshaling.
 
 ## Progress
 
-Not started.
+Complete.
+
+- Added `PermissionRuleValue` and `PermissionUpdate` with a custom
+  `MarshalJSON` that emits only the fields relevant to `.Type`
+  (`permission.go`). Unknown `.Type` values marshal as `{"type",...,
+  "destination"?}` without error, per AC 2's garbage-in rule.
+- Changed `PermissionPolicy.Decide` to return `[]PermissionUpdate`;
+  updated `AutoApprovePolicy`/`AutoDenyPolicy` (both still return `nil`).
+- `engine.go` unchanged beyond the type flowing through: the existing
+  `resp["updatedPermissions"] = updatedPermissions` + `json.Marshal(resp)`
+  now serializes each element via `MarshalJSON`.
+- Tests: `permission_test.go` (unit tests per Test Scenarios) and an
+  extended `TestClient_CanUseToolRoundTripFields` whose policy returns an
+  `addRules` and a `setMode` update, asserting per-element shape of the
+  captured `control_response`.
 
 ## Validation
 
-Not yet applicable.
+- `go build -buildvcs=false ./...` — clean.
+- `go test -race -count=1 ./...` — ok (13s, no leaked fake-CLI children).
+- `go vet ./...` — clean.
+- `gofmt -l .` — clean.
+- All Test Scenarios covered: rules/setMode/directories variants with
+  irrelevant fields dropped; destination present/absent per variant;
+  `RuleContent` omitted when empty; two-type end-to-end round trip.
