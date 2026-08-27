@@ -107,10 +107,20 @@ Complete. Implemented on branch `sdk-parity/cli-subprocess-robustness`:
 - AC 2: `transport.close()` is now 3 stages — stdin-close + wait →
   SIGTERM + wait → SIGKILL + wait — reusing the single `waitDone`
   reaper (`cmd.Wait` still called exactly once, in `wait()`).
-  `closeErr` is set only on the natural-exit and SIGTERM paths; the
-  forced-SIGKILL path leaves it nil, as before. Doc comment documents
-  the ~3x gracePeriod worst case. `gracePeriod` keeps its
-  per-stage meaning.
+  Corrected during review (2026-08-27, after the implementing agent's
+  first pass): `closeErr` is set ONLY on the stage-1 natural-exit path
+  (a CLI that exited badly entirely on its own, before any signal was
+  sent) — both the SIGTERM and SIGKILL paths suppress the wait error,
+  since both are signals *we* sent, not the CLI exiting "on its own".
+  The agent's original implementation reported the SIGTERM-stage error
+  too, which contradicted the pre-existing `close()` doc comment's own
+  stated intent ("an error from being killed by us is not reported");
+  fixed directly plus the four tests that had encoded the wrong
+  assumption (`TestClient_CloseForceKillsHungProcess`,
+  `TestClient_CloseIsIdempotent` in `client_test.go`, the
+  close-during-prompt test in `engine_test.go`, and a stale comment in
+  `errors_test.go`). Doc comment documents the ~3x gracePeriod worst
+  case. `gracePeriod` keeps its per-stage meaning.
 - AC 3: `checkCLIVersion` in `discovery.go`, run from `New()` in a
   goroutine right after `startTransport` succeeds: `exec.CommandContext`
   with a 2s timeout, first `\d+\.\d+\.\d+` match compared against
@@ -125,9 +135,11 @@ Complete. Implemented on branch `sdk-parity/cli-subprocess-robustness`:
   comparator table). Fake CLI gained `-v` handling
   (`CLAUDECODE_FAKE_VERSION`, incl. "hang") and `sigterm_exit` /
   `ignore_signals` scenarios. Existing close tests updated: the "hang"
-  fake now dies at the SIGTERM stage, so `Close()` reports the signal
-  wait error — assertions updated in `client_test.go`,
-  `engine_test.go`, `errors_test.go` (regression coverage preserved).
+  fake now dies at the SIGTERM stage; `Close()` returns nil there (see
+  the AC 2 correction above) — assertions in `client_test.go`,
+  `engine_test.go`, `errors_test.go` were re-fixed to match the
+  corrected (nil-on-SIGTERM-death-too) semantics, not the implementing
+  agent's original (error-on-SIGTERM-death) assumption.
 
 ## Validation
 
@@ -136,6 +148,7 @@ Complete. Implemented on branch `sdk-parity/cli-subprocess-robustness`:
 - `gofmt -l .` — no output.
 - `go test -race -count=1 ./...` — ok (all tests, including the
   phase-1 regressions `TestClient_CloseForceKillsHungProcess` and
-  `TestClient_CloseIsIdempotent`, updated for the SIGTERM stage).
-- No leaked fake-CLI processes after the suite (verified via
-  `pgrep -f CLAUDECODE_FAKE` post-run).
+  `TestClient_CloseIsIdempotent`, and the corrected SIGTERM-stage
+  assertions), stable across repeated runs.
+- No leaked fake-CLI processes after the suite (verified via `ps aux`
+  post-run).
