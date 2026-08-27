@@ -158,6 +158,28 @@ func runFakeCLI() {
 		// A pending timer keeps the runtime from considering it deadlocked.
 		time.Sleep(time.Hour)
 
+	case "capture":
+		// Reports this process's argv and environment back through the
+		// result message so flag/env-construction tests can assert exactly
+		// what the client spawned us with. Consume the prompt line first
+		// so the client's stdin write always completes before we exit.
+		stdin.Scan()
+		dump, err := json.Marshal(map[string]any{
+			"args": os.Args[1:],
+			"env":  os.Environ(),
+		})
+		if err != nil {
+			panic(err)
+		}
+		writeLine(map[string]any{
+			"type":       "result",
+			"subtype":    "success",
+			"is_error":   false,
+			"num_turns":  1,
+			"session_id": "sess-capture",
+			"result":     string(dump),
+		})
+
 	default:
 		fmt.Fprintf(os.Stderr, "fake cli: unknown scenario %q\n", scenario)
 		os.Exit(1)
