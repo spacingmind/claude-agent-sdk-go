@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 )
@@ -36,6 +38,34 @@ type transport struct {
 	closed chan struct{}
 
 	closeOnce sync.Once
+}
+
+// buildEnv assembles the CLI subprocess environment: the inherited
+// environment minus CLAUDECODE (so SDK-spawned subprocesses never think
+// they run inside a Claude Code parent), then CLAUDE_CODE_ENTRYPOINT=sdk-go
+// unless the caller's vars already set that key (caller override wins),
+// then the caller-supplied vars on top. Mirrors the Python SDK's connect().
+func buildEnv(caller []string) []string {
+	entrypointSet := false
+	for _, kv := range caller {
+		if strings.HasPrefix(kv, "CLAUDE_CODE_ENTRYPOINT=") {
+			entrypointSet = true
+			break
+		}
+	}
+
+	inherited := os.Environ()
+	env := make([]string, 0, len(inherited)+len(caller)+1)
+	for _, kv := range inherited {
+		if kv == "CLAUDECODE" || strings.HasPrefix(kv, "CLAUDECODE=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	if !entrypointSet {
+		env = append(env, "CLAUDE_CODE_ENTRYPOINT=sdk-go")
+	}
+	return append(env, caller...)
 }
 
 func startTransport(worktreePath, cliPath string, args, env []string, stderr io.Writer) (*transport, error) {
