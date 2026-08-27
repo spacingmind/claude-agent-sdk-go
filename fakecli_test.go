@@ -20,6 +20,7 @@ func TestMain(m *testing.M) {
 		runFakeCLI()
 		return
 	}
+
 	os.Exit(m.Run())
 }
 
@@ -27,14 +28,17 @@ func TestMain(m *testing.M) {
 // CLI for the given scenario (see runFakeCLI).
 func fakeCLIOptions(t *testing.T, scenario string) []Option {
 	t.Helper()
+
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatalf("os.Executable() error = %v", err)
 	}
+
 	env := append(os.Environ(),
 		"CLAUDECODE_FAKE_CLI=1",
 		"CLAUDECODE_FAKE_SCENARIO="+scenario,
 	)
+
 	return []Option{
 		WithCLIPath(self),
 		withExtraEnv(env),
@@ -52,7 +56,8 @@ func runFakeCLI() {
 		if err != nil {
 			panic(err)
 		}
-		fmt.Fprintf(os.Stdout, "%s\n", data)
+
+		_, _ = fmt.Fprintf(os.Stdout, "%s\n", data)
 	}
 
 	// ackInitialize consumes (and answers) the initialize control_request
@@ -74,6 +79,7 @@ func runFakeCLI() {
 		if !stdin.Scan() {
 			panic("fake cli: stdin closed before initialize")
 		}
+
 		var env struct {
 			Type      string `json:"type"`
 			RequestID string `json:"request_id"`
@@ -81,6 +87,7 @@ func runFakeCLI() {
 		if err := json.Unmarshal(stdin.Bytes(), &env); err != nil || env.Type != "control_request" {
 			panic(fmt.Sprintf("fake cli: expected initialize control_request, got %q", stdin.Text()))
 		}
+
 		writeLine(controlResponseLine(env.RequestID, map[string]any{"success": true}))
 	}
 
@@ -110,6 +117,7 @@ func runFakeCLI() {
 			if err := json.Unmarshal(stdin.Bytes(), &env); err != nil {
 				continue
 			}
+
 			if env.Type == "control_response" {
 				return map[string]any{
 					"subtype":    env.Response.Subtype,
@@ -119,6 +127,7 @@ func runFakeCLI() {
 				}
 			}
 		}
+
 		panic("fake cli: stdin closed waiting for control_response")
 	}
 
@@ -160,6 +169,7 @@ func runFakeCLI() {
 		})
 
 		stdin.Scan()
+
 		var resp struct {
 			Response struct {
 				Response struct {
@@ -167,7 +177,9 @@ func runFakeCLI() {
 				} `json:"response"`
 			} `json:"response"`
 		}
+
 		_ = json.Unmarshal(stdin.Bytes(), &resp)
+
 		behavior := resp.Response.Response.Behavior
 		if behavior == "" {
 			behavior = "unknown"
@@ -199,9 +211,11 @@ func runFakeCLI() {
 		ackInitialize()
 		stdin.Scan() // consume the prompt line
 
-		fmt.Fprintln(os.Stdout, "not json at all")
+		_, _ = fmt.Fprintln(os.Stdout, "not json at all")
+
 		writeLine(map[string]any{"type": "unknown_type", "foo": "bar"})
-		fmt.Fprintln(os.Stdout, "")
+
+		_, _ = fmt.Fprintln(os.Stdout, "")
 
 		writeLine(map[string]any{
 			"type":       "assistant",
@@ -237,6 +251,7 @@ func runFakeCLI() {
 		// what the client spawned us with. Consume the prompt line first
 		// so the client's stdin write always completes before we exit.
 		stdin.Scan()
+
 		dump, err := json.Marshal(map[string]any{
 			"args": os.Args[1:],
 			"env":  os.Environ(),
@@ -244,6 +259,7 @@ func runFakeCLI() {
 		if err != nil {
 			panic(err)
 		}
+
 		writeLine(map[string]any{
 			"type":       "result",
 			"subtype":    "success",
@@ -260,24 +276,31 @@ func runFakeCLI() {
 		// the result message (prompted by a final user turn if one was
 		// sent) so tests can assert the exact JSON the client sent.
 		ackInitialize()
+
 		maxReqs, _ := strconv.Atoi(os.Getenv("CLAUDECODE_FAKE_MAX_LINES"))
+
 		var lines []string
+
 		seen := 0
 		for seen < maxReqs && stdin.Scan() {
 			lines = append(lines, stdin.Text())
+
 			var env struct {
 				Type      string `json:"type"`
 				RequestID string `json:"request_id"`
 			}
 			if err := json.Unmarshal(stdin.Bytes(), &env); err == nil && env.Type == "control_request" {
 				writeLine(controlResponseLine(env.RequestID, map[string]any{}))
+
 				seen++
 			}
 		}
+
 		dump, err := json.Marshal(lines)
 		if err != nil {
 			panic(err)
 		}
+
 		writeLine(map[string]any{
 			"type":       "result",
 			"subtype":    "success",
@@ -304,6 +327,7 @@ func runFakeCLI() {
 		// is consumed and a final result is sent. Used for outbound-method
 		// happy-path/error/timeout tests.
 		ackInitialize()
+
 		var canned map[string]json.RawMessage
 		if err := json.Unmarshal([]byte(os.Getenv("CLAUDECODE_FAKE_RESPONSES")), &canned); err != nil {
 			panic(err)
@@ -312,11 +336,13 @@ func runFakeCLI() {
 		// subtypes named in CLAUDECODE_FAKE_IGNORE, comma-separated, which
 		// get no response at all -- for timeout tests).
 		ignore := map[string]bool{}
-		for _, s := range strings.Split(os.Getenv("CLAUDECODE_FAKE_IGNORE"), ",") {
+
+		for s := range strings.SplitSeq(os.Getenv("CLAUDECODE_FAKE_IGNORE"), ",") {
 			if s != "" {
 				ignore[s] = true
 			}
 		}
+
 		for stdin.Scan() {
 			var env struct {
 				Type      string          `json:"type"`
@@ -326,21 +352,26 @@ func runFakeCLI() {
 			if err := json.Unmarshal(stdin.Bytes(), &env); err != nil || env.Type != "control_request" {
 				continue
 			}
+
 			var inner struct {
 				Subtype string `json:"subtype"`
 			}
+
 			_ = json.Unmarshal(env.Request, &inner)
 			if ignore[inner.Subtype] {
 				continue
 			}
+
 			raw, ok := canned[inner.Subtype]
 			if !ok {
 				raw, _ = json.Marshal(map[string]any{})
 			}
+
 			var payload map[string]any
 			if err := json.Unmarshal(raw, &payload); err != nil {
 				panic(err)
 			}
+
 			if e, isErr := payload["__error"].(string); isErr {
 				delete(payload, "__error")
 				writeLine(map[string]any{
@@ -351,8 +382,10 @@ func runFakeCLI() {
 						"error":      e,
 					},
 				})
+
 				continue
 			}
+
 			writeLine(map[string]any{
 				"type": "control_response",
 				"response": map[string]any{
@@ -373,6 +406,7 @@ func runFakeCLI() {
 		stdin.Scan() // consume the prompt line
 
 		sendControlRequestToClient("req-mcp", map[string]any{"subtype": "mcp_message"})
+
 		mcpResp := readControlResponse()
 
 		sendControlRequestToClient("req-hook", map[string]any{
@@ -381,6 +415,7 @@ func runFakeCLI() {
 			"input":       map[string]any{},
 			"tool_use_id": nil,
 		})
+
 		hookResp := readControlResponse()
 
 		writeLine(map[string]any{
@@ -390,7 +425,7 @@ func runFakeCLI() {
 		})
 		// No well-formed control_request => client sends no response; just
 		// proceed. The malformed envelope with a missing request_id:
-		fmt.Fprintln(os.Stdout, `{"type":"control_request","request":{"subtype":"can_use_tool"}}`)
+		_, _ = fmt.Fprintln(os.Stdout, `{"type":"control_request","request":{"subtype":"can_use_tool"}}`)
 
 		// A can_use_tool with the enriched fields, to prove they reach the
 		// policy.
@@ -406,6 +441,7 @@ func runFakeCLI() {
 			"blocked_path":    "/tmp/x",
 			"agent_id":        "agent-1",
 		})
+
 		cutResp := readControlResponse()
 
 		dump, err := json.Marshal(map[string]any{
@@ -416,6 +452,7 @@ func runFakeCLI() {
 		if err != nil {
 			panic(err)
 		}
+
 		writeLine(map[string]any{
 			"type":       "result",
 			"subtype":    "success",
@@ -440,6 +477,7 @@ func runFakeCLI() {
 			"input":       map[string]any{"a": 1},
 			"tool_use_id": "tool-h",
 		})
+
 		h1 := readControlResponse()
 
 		// cancel test: a can_use_tool whose policy blocks until cancelled.
@@ -463,12 +501,14 @@ func runFakeCLI() {
 			"input":       map[string]any{"a": 2},
 			"tool_use_id": "tool-h3",
 		})
+
 		h3 := readControlResponse()
 
 		dump, err := json.Marshal(map[string]any{"hook": h1, "after_cancel": h3})
 		if err != nil {
 			panic(err)
 		}
+
 		writeLine(map[string]any{
 			"type":       "result",
 			"subtype":    "success",
@@ -485,6 +525,7 @@ func runFakeCLI() {
 		if !stdin.Scan() {
 			panic("fake cli: stdin closed before initialize")
 		}
+
 		var initEnv struct {
 			RequestID string `json:"request_id"`
 			Request   struct {
@@ -494,6 +535,7 @@ func runFakeCLI() {
 		if err := json.Unmarshal(stdin.Bytes(), &initEnv); err != nil {
 			panic(err)
 		}
+
 		writeLine(controlResponseLine(initEnv.RequestID, map[string]any{"success": true}))
 		stdin.Scan() // consume the prompt line
 
@@ -511,6 +553,7 @@ func runFakeCLI() {
 			},
 			"tool_use_id": "tool-1",
 		})
+
 		hookResp := readControlResponse()
 
 		dump, err := json.Marshal(map[string]any{
@@ -520,6 +563,7 @@ func runFakeCLI() {
 		if err != nil {
 			panic(err)
 		}
+
 		writeLine(map[string]any{
 			"type":       "result",
 			"subtype":    "success",
@@ -548,12 +592,15 @@ func runFakeCLI() {
 			"input":       map[string]any{"hook_event_name": "PostToolUse"},
 			"tool_use_id": "tool-b",
 		})
+
 		r1 := readControlResponse()
 		r2 := readControlResponse()
+
 		dump, err := json.Marshal(map[string]any{"responses": []map[string]any{r1, r2}})
 		if err != nil {
 			panic(err)
 		}
+
 		writeLine(map[string]any{
 			"type":       "result",
 			"subtype":    "success",
@@ -577,7 +624,9 @@ func runFakeCLI() {
 			if id != "" {
 				msg["id"] = id
 			}
+
 			msg["jsonrpc"] = "2.0"
+
 			return map[string]any{
 				"subtype":     "mcp_message",
 				"server_name": server,
@@ -601,14 +650,17 @@ func runFakeCLI() {
 			{"m10", "other-server", map[string]any{"method": "tools/call", "params": map[string]any{"name": "img"}}},
 		}
 		resps := map[string]map[string]any{}
+
 		for _, r := range requests {
 			sendControlRequestToClient(r.id, mcpReq(r.id, r.server, r.msg))
 			resps[r.id] = readControlResponse()
 		}
+
 		dump, err := json.Marshal(resps)
 		if err != nil {
 			panic(err)
 		}
+
 		writeLine(map[string]any{
 			"type":       "result",
 			"subtype":    "success",
@@ -626,6 +678,7 @@ func runFakeCLI() {
 		// as hooks_concurrent).
 		ackInitialize()
 		stdin.Scan() // consume the prompt line
+
 		call := func(id, server, tool string) {
 			sendControlRequestToClient(id, map[string]any{
 				"subtype":     "mcp_message",
@@ -641,13 +694,16 @@ func runFakeCLI() {
 		call("mc-1", "test-server", "block-a")
 		call("mc-2", "test-server", "block-b")
 		call("mc-3", "other-server", "block-c")
+
 		r1 := readControlResponse()
 		r2 := readControlResponse()
 		r3 := readControlResponse()
+
 		dump, err := json.Marshal([]map[string]any{r1, r2, r3})
 		if err != nil {
 			panic(err)
 		}
+
 		writeLine(map[string]any{
 			"type":       "result",
 			"subtype":    "success",
@@ -661,6 +717,7 @@ func runFakeCLI() {
 		// Two full turn cycles on one subprocess: proves sequential Prompt
 		// calls reuse the same CLI process.
 		ackInitialize()
+
 		for turn := 1; turn <= 2; turn++ {
 			stdin.Scan() // consume the prompt line
 			writeLine(map[string]any{
@@ -704,15 +761,18 @@ func runFakeCLI() {
 			if err := json.Unmarshal(stdin.Bytes(), &env); err != nil || env.Type != "control_request" {
 				continue
 			}
+
 			var inner struct {
 				Subtype string `json:"subtype"`
 			}
+
 			_ = json.Unmarshal(env.Request, &inner)
 			if inner.Subtype == "interrupt" {
 				writeLine(controlResponseLine(env.RequestID, map[string]any{}))
 				break
 			}
 		}
+
 		writeLine(map[string]any{
 			"type":        "result",
 			"subtype":     "success",
@@ -727,6 +787,7 @@ func runFakeCLI() {
 		// Reads two control requests, then answers the second one first --
 		// correlation must survive out-of-order responses.
 		ackInitialize()
+
 		var ids []string
 		for len(ids) < 2 && stdin.Scan() {
 			var env struct {
@@ -736,8 +797,10 @@ func runFakeCLI() {
 			if err := json.Unmarshal(stdin.Bytes(), &env); err != nil || env.Type != "control_request" {
 				continue
 			}
+
 			ids = append(ids, env.RequestID)
 		}
+
 		if len(ids) == 2 {
 			writeLine(controlResponseLine(ids[1], map[string]any{}))
 			writeLine(controlResponseLine(ids[0], map[string]any{}))
@@ -752,7 +815,9 @@ func runFakeCLI() {
 		// policy; responses are dumped into the result for assertion.
 		ackInitialize()
 		stdin.Scan() // consume the prompt line
+
 		var resps []map[string]any
+
 		for _, id := range []string{"req-a", "req-b", "req-c"} {
 			sendControlRequestToClient(id, map[string]any{
 				"subtype":         "can_use_tool",
@@ -766,12 +831,15 @@ func runFakeCLI() {
 				"blocked_path":    "/tmp/x",
 				"agent_id":        "agent-1",
 			})
+
 			resps = append(resps, readControlResponse())
 		}
+
 		dump, err := json.Marshal(resps)
 		if err != nil {
 			panic(err)
 		}
+
 		writeLine(map[string]any{
 			"type":       "result",
 			"subtype":    "success",

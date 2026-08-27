@@ -1,0 +1,50 @@
+version: 1
+project_name: claude-agent-sdk-go
+before:
+  hooks:
+    - go mod tidy
+builds:
+  - skip: true
+snapshot:
+  name_template: "{{ incpatch .Version }}-next"
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - '^ci:'
+      - Merge pull request
+      - Merge branch
+  groups:
+    - title: Features
+      regexp: "^.*feat[(\\w)]*:+.*$"
+      order: 0
+    - title: 'Bug fixes'
+      regexp: "^.*fix[(\\w)]*:+.*$"
+      order: 1
+    - title: Others
+      order: 999
+release:
+  github:
+    owner: spacingmind
+    name: claude-agent-sdk-go
+  prerelease: auto
+  mode: replace
+  header: |
+    ## claude-agent-sdk-go {{ .Tag }}
+
+    ```bash
+    go get github.com/spacingmind/claude-agent-sdk-go@{{ .Tag }}
+    ```
+
+    📦 **[View on pkg.go.dev](https://pkg.go.dev/github.com/spacingmind/claude-agent-sdk-go@{{ .Tag }})**
+  footer: |
+    **Full Changelog**: https://github.com/spacingmind/claude-agent-sdk-go/compare/{{ .PreviousTag }}...{{ .Tag }}
+  extra_files:
+    - glob: ./README.md
+    - glob: ./LICENSE
+announce:
+  skip: true

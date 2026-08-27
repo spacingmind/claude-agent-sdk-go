@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"sync/atomic"
 	"time"
 )
@@ -48,7 +49,9 @@ var requestIDCounter atomic.Int64
 
 func nextRequestID() string {
 	var b [4]byte
+
 	_, _ = rand.Read(b[:])
+
 	return fmt.Sprintf("req_%d_%s", requestIDCounter.Add(1), hex.EncodeToString(b[:]))
 }
 
@@ -58,7 +61,7 @@ func nextRequestID() string {
 // transport's line stream ends or the Client is closed, force-failing any
 // still-pending outbound requests and closing c.msgs so stream consumers see
 // channel-close rather than a hang.
-func (c *Client) readLoop() {
+func (c *Client) readLoop() { //nolint:gocyclo  // flat per-message-type dispatch
 	defer close(c.msgs)
 	defer c.failAllPending(errors.New("claudecode: cli connection closed"))
 
@@ -70,6 +73,7 @@ func (c *Client) readLoop() {
 			if !ok {
 				return
 			}
+
 			if lr.err != nil {
 				return
 			}
@@ -88,6 +92,7 @@ func (c *Client) readLoop() {
 					// skip-malformed-lines policy.
 					continue
 				}
+
 				c.handlerWG.Add(1)
 				go c.dispatchControlRequest(v)
 			case *controlCancelRequest:
@@ -110,12 +115,12 @@ func (c *Client) readLoop() {
 // late response can't leak or land on a dead waiter.
 func (c *Client) sendControlRequest(ctx context.Context, subtype string, extra map[string]any) (*controlResponse, error) {
 	id := nextRequestID()
+
 	request := map[string]any{"subtype": subtype}
-	for k, v := range extra {
-		request[k] = v
-	}
+	maps.Copy(request, extra)
 
 	entry := &pendingEntry{ch: make(chan pendingResult, 1)}
+
 	c.pendingMu.Lock()
 	c.pending[id] = entry
 	c.pendingMu.Unlock()
@@ -152,13 +157,16 @@ func (c *Client) sendControlRequest(ctx context.Context, subtype string, extra m
 		if r.err != nil {
 			return nil, r.err
 		}
+
 		if r.resp.Subtype == "error" {
 			msg := r.resp.Error
 			if msg == "" {
 				msg = "unknown error"
 			}
+
 			return nil, fmt.Errorf("claudecode: control request %q failed: %s", subtype, msg)
 		}
+
 		return r.resp, nil
 	}
 }
@@ -168,10 +176,12 @@ func (c *Client) resolvePending(resp *controlResponse) {
 	entry := c.pending[resp.RequestID]
 	delete(c.pending, resp.RequestID)
 	c.pendingMu.Unlock()
+
 	if entry == nil {
 		// Unknown or already-resolved request_id: silently ignore.
 		return
 	}
+
 	entry.ch <- pendingResult{resp: resp}
 }
 
@@ -180,6 +190,7 @@ func (c *Client) failAllPending(err error) {
 	pending := c.pending
 	c.pending = make(map[string]*pendingEntry)
 	c.pendingMu.Unlock()
+
 	for _, entry := range pending {
 		entry.ch <- pendingResult{err: err}
 	}
@@ -204,6 +215,7 @@ func (c *Client) dispatchControlRequest(req *controlRequest) {
 		c.inflightMu.Unlock()
 		return
 	}
+
 	c.inflight[req.RequestID] = cancel
 	c.inflightMu.Unlock()
 
@@ -218,6 +230,7 @@ func (c *Client) cancelInflightHandler(requestID string) {
 	c.inflightMu.Lock()
 	cancel := c.inflight[requestID]
 	c.inflightMu.Unlock()
+
 	if cancel != nil {
 		cancel()
 	}
@@ -225,11 +238,13 @@ func (c *Client) cancelInflightHandler(requestID string) {
 
 func (c *Client) cancelAllInflightHandlers() {
 	c.inflightMu.Lock()
+
 	cancels := make([]context.CancelFunc, 0, len(c.inflight))
 	for _, cancel := range c.inflight {
 		cancels = append(cancels, cancel)
 	}
 	c.inflightMu.Unlock()
+
 	for _, cancel := range cancels {
 		cancel()
 	}
@@ -253,11 +268,12 @@ func (c *Client) writeControlResponse(requestID string, payload wireControlRespo
 // handleControlRequest answers one inbound control request: can_use_tool via
 // the PermissionPolicy, hook_callback via the registered callback map, and
 // mcp_message via the in-process SDK MCP servers.
-func (c *Client) handleControlRequest(ctx context.Context, req *controlRequest) {
+func (c *Client) handleControlRequest(ctx context.Context, req *controlRequest) { //nolint:gocyclo  // flat per-subtype dispatch
 	writeError := func(errStr string) {
 		if ctx.Err() != nil {
 			return
 		}
+
 		_ = c.writeControlResponse(req.RequestID, wireControlResponsePayload{
 			Subtype: "error",
 			Error:   errStr,
@@ -284,16 +300,20 @@ func (c *Client) handleControlRequest(ctx context.Context, req *controlRequest) 
 		}
 
 		var payload wireControlResponsePayload
+
 		payload.Subtype = "success"
+
 		if allow {
 			in := updatedInput
 			if in == nil {
 				in = req.Input
 			}
+
 			resp := map[string]any{"behavior": "allow", "updatedInput": in}
 			if len(updatedPermissions) > 0 {
 				resp["updatedPermissions"] = updatedPermissions
 			}
+
 			raw, _ := json.Marshal(resp)
 			payload.Response = raw
 		} else {
@@ -301,6 +321,7 @@ func (c *Client) handleControlRequest(ctx context.Context, req *controlRequest) 
 			if interrupt {
 				resp["interrupt"] = true
 			}
+
 			raw, _ := json.Marshal(resp)
 			payload.Response = raw
 		}
@@ -308,28 +329,34 @@ func (c *Client) handleControlRequest(ctx context.Context, req *controlRequest) 
 		if ctx.Err() != nil {
 			return
 		}
+
 		_ = c.writeControlResponse(req.RequestID, payload)
 
 	case "hook_callback":
 		c.hookMu.Lock()
 		cb := c.hookCallbacks[req.CallbackID]
 		c.hookMu.Unlock()
+
 		if cb == nil {
-			writeError(fmt.Sprintf("No hook callback found for ID: %s", req.CallbackID))
+			writeError("No hook callback found for ID: " + req.CallbackID)
 			return
 		}
+
 		out, err := cb(ctx, req.Input, req.ToolUseID)
 		if err != nil {
 			writeError(err.Error())
 			return
 		}
+
 		if ctx.Err() != nil {
 			return
 		}
+
 		var raw json.RawMessage
 		if out != nil {
 			raw, _ = json.Marshal(out)
 		}
+
 		_ = c.writeControlResponse(req.RequestID, wireControlResponsePayload{
 			Subtype:  "success",
 			Response: raw,
@@ -340,10 +367,12 @@ func (c *Client) handleControlRequest(ctx context.Context, req *controlRequest) 
 			writeError("Missing server_name or message for MCP request")
 			return
 		}
+
 		resp := c.dispatchMcpMessage(ctx, req.ServerName, req.Message)
 		if ctx.Err() != nil {
 			return
 		}
+
 		raw, _ := json.Marshal(map[string]any{"mcp_response": resp})
 		_ = c.writeControlResponse(req.RequestID, wireControlResponsePayload{
 			Subtype:  "success",
@@ -364,17 +393,19 @@ func (c *Client) Query(ctx context.Context, text string) error {
 
 // QueryWithSession sends text as a new user turn on the named session. An
 // empty sessionID uses the CLI's default session.
-func (c *Client) QueryWithSession(ctx context.Context, text, sessionID string) error {
+func (c *Client) QueryWithSession(_ context.Context, text, sessionID string) error {
 	turn := wireUserTurn{
-		Type:    "user",
-		Message: wireUserContent{Role: "user", Content: text},
+		Type:    wireTypeUser,
+		Message: wireUserContent{Role: wireTypeUser, Content: text},
 	}
 	if sessionID != "" {
 		turn.SessionID = sessionID
 	}
+
 	if err := c.tr.writeLine(turn); err != nil {
 		return fmt.Errorf("claudecode: send prompt: %w", err)
 	}
+
 	return nil
 }
 
@@ -394,6 +425,7 @@ func (c *Client) ReceiveResponse(ctx context.Context) <-chan Message {
 	out := make(chan Message)
 	go func() {
 		defer close(out)
+
 		for {
 			select {
 			case <-ctx.Done():
@@ -402,17 +434,20 @@ func (c *Client) ReceiveResponse(ctx context.Context) <-chan Message {
 				if !ok {
 					return
 				}
+
 				select {
 				case out <- msg:
 				case <-ctx.Done():
 					return
 				}
+
 				if _, isResult := msg.(ResultMessage); isResult {
 					return
 				}
 			}
 		}
 	}()
+
 	return out
 }
 
@@ -448,10 +483,12 @@ func (c *Client) GetMCPStatus(ctx context.Context) (*McpStatusResponse, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	var status McpStatusResponse
 	if err := json.Unmarshal(resp.Response, &status); err != nil {
 		return nil, fmt.Errorf("claudecode: parse mcp_status response: %w", err)
 	}
+
 	return &status, nil
 }
 
@@ -461,11 +498,14 @@ func (c *Client) GetContextUsage(ctx context.Context) (*ContextUsageResponse, er
 	if err != nil {
 		return nil, err
 	}
+
 	var usage ContextUsageResponse
 	if err := json.Unmarshal(resp.Response, &usage); err != nil {
 		return nil, fmt.Errorf("claudecode: parse get_context_usage response: %w", err)
 	}
+
 	usage.Raw = append(json.RawMessage(nil), resp.Response...)
+
 	return &usage, nil
 }
 
@@ -494,6 +534,7 @@ type McpStatusResponse struct {
 	MCPServers []McpServerStatus `json:"mcpServers"`
 }
 
+// McpServerStatus is one server's entry in an McpStatusResponse.
 type McpServerStatus struct {
 	Name       string          `json:"name"`
 	Status     string          `json:"status"`
@@ -504,17 +545,20 @@ type McpServerStatus struct {
 	Tools      []McpToolInfo   `json:"tools,omitempty"`
 }
 
+// McpServerInfo identifies an MCP server in its status entry.
 type McpServerInfo struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
 }
 
+// McpToolAnnotations is the CLI's annotation block on a reported MCP tool.
 type McpToolAnnotations struct {
 	ReadOnly    bool `json:"readOnly"`
 	Destructive bool `json:"destructive"`
 	OpenWorld   bool `json:"openWorld"`
 }
 
+// McpToolInfo is one tool reported for an MCP server.
 type McpToolInfo struct {
 	Name        string              `json:"name"`
 	Description string              `json:"description"`
@@ -533,6 +577,8 @@ type ContextUsageResponse struct {
 	Raw         json.RawMessage        `json:"-"`
 }
 
+// ContextUsageCategory is one category's token count in a
+// ContextUsageResponse.
 type ContextUsageCategory struct {
 	Name   string `json:"name"`
 	Tokens int    `json:"tokens"`

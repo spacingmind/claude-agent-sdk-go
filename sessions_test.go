@@ -16,7 +16,9 @@ func fakeConfigHome(t *testing.T) string {
 	dir := t.TempDir()
 	prev := configHomeDir
 	configHomeDir = func() string { return dir }
+
 	t.Cleanup(func() { configHomeDir = prev })
+
 	return dir
 }
 
@@ -25,19 +27,23 @@ func fakeConfigHome(t *testing.T) string {
 // sanitized projects/<name> storage directory, returning both paths.
 func fakeProject(t *testing.T, configHome, name string) (projectDir, storageDir string) {
 	t.Helper()
+
 	projectDir = filepath.Join(configHome, "workspaces", name)
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+
 	storageDir = filepath.Join(configHome, "projects", sanitizeProjectDirName(projectDir))
 	if err := os.MkdirAll(storageDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+
 	return projectDir, storageDir
 }
 
 func writeLines(t *testing.T, path string, lines ...string) {
 	t.Helper()
+
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -45,6 +51,7 @@ func writeLines(t *testing.T, path string, lines ...string) {
 
 func touchTime(t *testing.T, path string, at time.Time) {
 	t.Helper()
+
 	if err := os.Chtimes(path, at, at); err != nil {
 		t.Fatal(err)
 	}
@@ -71,6 +78,7 @@ func TestListSessions_SortLimitOffset(t *testing.T) {
 	home := fakeConfigHome(t)
 	_, storage := fakeProject(t, home, "proj")
 	base := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+
 	for i, sid := range []string{uuidA, uuidB, uuidC} {
 		p := filepath.Join(storage, sid+".jsonl")
 		writeLines(t, p, userEntry(sid, "", fmt.Sprintf("prompt %d", i)))
@@ -81,9 +89,11 @@ func TestListSessions_SortLimitOffset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
+
 	if len(got) != 3 || got[0].SessionID != uuidC || got[2].SessionID != uuidA {
 		t.Fatalf("want newest-first %s,%s,%s; got %v", uuidC, uuidB, uuidA, got)
 	}
+
 	if got[0].Summary != "prompt 2" {
 		t.Errorf("Summary = %q, want first-prompt fallback %q", got[0].Summary, "prompt 2")
 	}
@@ -92,6 +102,7 @@ func TestListSessions_SortLimitOffset(t *testing.T) {
 	if len(limited) != 1 || limited[0].SessionID != uuidC {
 		t.Errorf("Limit=1: got %v", limited)
 	}
+
 	paged, _ := ListSessions(ListSessionsOptions{Directory: filepath.Join(home, "workspaces", "proj"), Limit: 1, Offset: 1})
 	if len(paged) != 1 || paged[0].SessionID != uuidB {
 		t.Errorf("Offset=1,Limit=1: got %v", paged)
@@ -109,6 +120,7 @@ func TestListSessions_AllProjectsWhenDirectoryEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
+
 	if len(got) != 2 {
 		t.Fatalf("want 2 sessions across both projects, got %d", len(got))
 	}
@@ -121,23 +133,28 @@ func TestSanitize_LongPathHashRoundTrip(t *testing.T) {
 	if err := os.MkdirAll(long, 0o755); err != nil {
 		t.Fatal(err)
 	}
+
 	sanitized := sanitizeProjectDirName(long)
 	if len(sanitized) <= 200 {
 		t.Fatalf("sanitized name %q not truncated", sanitized)
 	}
+
 	if !strings.HasPrefix(sanitized, sanitized[:200]+"-") {
 		t.Fatalf("sanitized name %q lacks truncated prefix + '-'", sanitized)
 	}
+
 	storage := filepath.Join(home, "projects", sanitized)
 	if err := os.MkdirAll(storage, 0o755); err != nil {
 		t.Fatal(err)
 	}
+
 	writeLines(t, filepath.Join(storage, uuidA+".jsonl"), userEntry(uuidA, "", "deep"))
 
 	got, err := GetSessionInfo(uuidA, long)
 	if err != nil || got == nil {
 		t.Fatalf("GetSessionInfo on long path: %v, %v", got, err)
 	}
+
 	if got.Summary != "deep" {
 		t.Errorf("Summary = %q, want %q", got.Summary, "deep")
 	}
@@ -159,18 +176,22 @@ func TestGetSessionMessages_CompactionBoundaryExcluded(t *testing.T) {
 		fmt.Sprintf(`{"type":"user","uuid":%q,"parentUuid":%q,"isCompactSummary":true,"message":{"role":"user","content":[{"type":"text","text":"summary of earlier"}]}}`, uuidE, uuidD),
 		userEntry(uuidF, uuidE, "new question"),
 	)
+
 	msgs, err := GetSessionMessages(uuidA, filepath.Join(home, "workspaces", "proj"), 0, 0)
 	if err != nil {
 		t.Fatalf("GetSessionMessages: %v", err)
 	}
+
 	if len(msgs) != 2 {
 		t.Fatalf("want 2 visible messages (compact summary + new user), got %d: %+v", len(msgs), msgs)
 	}
+
 	for _, m := range msgs {
 		if m.UUID == uuidB || m.UUID == uuidC {
 			t.Errorf("pre-compaction entry %s double-counted", m.UUID)
 		}
 	}
+
 	if msgs[0].UUID != uuidE {
 		t.Errorf("first message = %s, want compact summary %s", msgs[0].UUID, uuidE)
 	}
@@ -184,6 +205,7 @@ func TestGetSessionMessages_MetaSidechainExcluded(t *testing.T) {
 		fmt.Sprintf(`{"type":"user","uuid":%q,"parentUuid":%q,"isSidechain":true,"message":{"role":"user","content":"side"}}`, uuidC, uuidB),
 		fmt.Sprintf(`{"type":"assistant","uuid":%q,"parentUuid":%q,"message":{"role":"assistant","content":"a"}}`, uuidD, uuidC),
 	)
+
 	msgs, err := GetSessionMessages(uuidA, filepath.Join(home, "workspaces", "proj"), 0, 0)
 	if err != nil {
 		t.Fatalf("GetSessionMessages: %v", err)
@@ -200,14 +222,17 @@ func TestSubagents_NestedWithMeta(t *testing.T) {
 	_, storage := fakeProject(t, home, "proj")
 	// Session main file must exist for ID validation context.
 	writeLines(t, filepath.Join(storage, uuidA+".jsonl"), userEntry(uuidA, "", "run subagent"))
+
 	nested := filepath.Join(storage, uuidA, "subagents", "workflows", "run-1")
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatal(err)
 	}
+
 	writeLines(t, filepath.Join(nested, "agent-"+uuidB+".jsonl"),
 		userEntry(uuidC, "", "sub prompt"),
 		assistantEntry(uuidD, uuidC),
 	)
+
 	if err := os.WriteFile(filepath.Join(nested, "agent-"+uuidB+".meta.json"),
 		[]byte(`{"toolUseId":"toolu_01","parentAgentId":"agent-xyz"}`), 0o644); err != nil {
 		t.Fatal(err)
@@ -217,19 +242,24 @@ func TestSubagents_NestedWithMeta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListSubagents: %v", err)
 	}
+
 	if len(ids) != 1 || ids[0] != uuidB {
 		t.Fatalf("want agent id %s, got %v", uuidB, ids)
 	}
+
 	msgs, err := GetSubagentMessages(uuidA, uuidB, filepath.Join(home, "workspaces", "proj"), 0, 0)
 	if err != nil {
 		t.Fatalf("GetSubagentMessages: %v", err)
 	}
+
 	if len(msgs) != 2 {
 		t.Fatalf("want 2 subagent messages, got %d", len(msgs))
 	}
+
 	if msgs[0].ParentToolUseID != "toolu_01" {
 		t.Errorf("first ParentToolUseID = %q, want toolu_01", msgs[0].ParentToolUseID)
 	}
+
 	for i, m := range msgs {
 		if m.ParentAgentID != "agent-xyz" {
 			t.Errorf("msgs[%d].ParentAgentID = %q, want agent-xyz", i, m.ParentAgentID)
@@ -255,10 +285,12 @@ func TestSessionInfo_TitleFallbackPriority(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			p := filepath.Join(storage, uuidA+".jsonl")
 			writeLines(t, p, userEntry(uuidA, "", "first prompt"), tc.line)
+
 			info, err := GetSessionInfo(uuidA, filepath.Join(home, "workspaces", "proj"))
 			if err != nil || info == nil {
 				t.Fatalf("GetSessionInfo: %v, %v", info, err)
 			}
+
 			if info.Summary != tc.want {
 				t.Errorf("Summary = %q, want %q", info.Summary, tc.want)
 			}
@@ -275,10 +307,12 @@ func TestSessions_CorruptLineResilience(t *testing.T) {
 		`{"type":"assistant","uuid":`, // corrupt line
 		assistantEntry(uuidC, uuidB),
 	)
+
 	msgs, err := GetSessionMessages(uuidA, filepath.Join(home, "workspaces", "proj"), 0, 0)
 	if err != nil {
 		t.Fatalf("GetSessionMessages: %v", err)
 	}
+
 	if len(msgs) != 2 {
 		t.Fatalf("want 2 messages despite corrupt line, got %d", len(msgs))
 	}
@@ -287,6 +321,7 @@ func TestSessions_CorruptLineResilience(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
+
 	if len(got) != 1 {
 		t.Fatalf("want 1 session listed despite corrupt line, got %d", len(got))
 	}
@@ -298,6 +333,7 @@ func TestSessions_EmptyAndMissingDirectories(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(home, "projects"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+
 	got, err := ListSessions(ListSessionsOptions{})
 	if err != nil || len(got) != 0 {
 		t.Fatalf("empty projects dir: got %v, %v; want empty, nil", got, err)
@@ -305,10 +341,12 @@ func TestSessions_EmptyAndMissingDirectories(t *testing.T) {
 	// Nonexistent config home entirely.
 	home2 := fakeConfigHome(t)
 	_ = home2
+
 	got2, err := ListSessions(ListSessionsOptions{Directory: "/nonexistent/project"})
 	if err != nil || len(got2) != 0 {
 		t.Fatalf("nonexistent dir: got %v, %v; want empty, nil", got2, err)
 	}
+
 	info, err := GetSessionInfo(uuidA, "/nonexistent/project")
 	if err != nil || info != nil {
 		t.Fatalf("GetSessionInfo nonexistent: got %v, %v; want nil, nil", info, err)
@@ -317,6 +355,7 @@ func TestSessions_EmptyAndMissingDirectories(t *testing.T) {
 
 func TestGetSessionMessages_InvalidSessionIDRejected(t *testing.T) {
 	home := fakeConfigHome(t)
+
 	_, _ = fakeProject(t, home, "proj")
 	if _, err := GetSessionMessages("not-a-uuid", filepath.Join(home, "workspaces", "proj"), 0, 0); err == nil {
 		t.Fatal("non-UUID session ID must return an error")
@@ -326,6 +365,7 @@ func TestGetSessionMessages_InvalidSessionIDRejected(t *testing.T) {
 func TestGetSessionMessages_MissingSessionReturnsNil(t *testing.T) {
 	home := fakeConfigHome(t)
 	_, _ = fakeProject(t, home, "proj")
+
 	msgs, err := GetSessionMessages(uuidA, filepath.Join(home, "workspaces", "proj"), 0, 0)
 	if err != nil || msgs != nil {
 		t.Fatalf("missing session: got %v, %v; want nil, nil", msgs, err)

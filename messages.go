@@ -319,6 +319,14 @@ type controlCancelRequest struct {
 	RequestID string
 }
 
+// Wire message-type discriminators on the CLI's NDJSON stream.
+const (
+	wireTypeSystem    = "system"
+	wireTypeAssistant = "assistant"
+	wireTypeUser      = "user"
+	wireTypeResult    = "result"
+)
+
 // decodeLine parses one line of the CLI's NDJSON stdout. It returns
 // (nil, nil) for blank lines and message types this package doesn't act on
 // (forward-compatible skip), and (nil, err) for a line that looks like JSON
@@ -340,13 +348,13 @@ func decodeLine(raw []byte) (any, error) {
 	}
 
 	switch env.Type {
-	case "system":
+	case wireTypeSystem:
 		return decodeSystemMessage(raw)
-	case "assistant":
+	case wireTypeAssistant:
 		return decodeAssistantMessage(raw)
-	case "user":
+	case wireTypeUser:
 		return decodeUserMessage(raw)
-	case "result":
+	case wireTypeResult:
 		return decodeResultMessage(raw)
 	case "stream_event":
 		return decodeStreamEvent(raw)
@@ -372,6 +380,7 @@ func decodeSystemMessage(raw []byte) (any, error) {
 	if err := json.Unmarshal(raw, &w); err != nil {
 		return nil, err
 	}
+
 	switch w.Subtype {
 	case "task_started":
 		return decodeTaskStarted(raw)
@@ -400,6 +409,7 @@ func decodeTaskStarted(raw []byte) (any, error) {
 	if err := json.Unmarshal(raw, &w); err != nil {
 		return nil, err
 	}
+
 	return TaskStartedMessage{
 		TaskID:      w.TaskID,
 		Description: w.Description,
@@ -423,6 +433,7 @@ func decodeTaskProgress(raw []byte) (any, error) {
 	if err := json.Unmarshal(raw, &w); err != nil {
 		return nil, err
 	}
+
 	return TaskProgressMessage{
 		TaskID:       w.TaskID,
 		Description:  w.Description,
@@ -448,6 +459,7 @@ func decodeTaskNotification(raw []byte) (any, error) {
 	if err := json.Unmarshal(raw, &w); err != nil {
 		return nil, err
 	}
+
 	return TaskNotificationMessage{
 		TaskID:     w.TaskID,
 		Status:     w.Status,
@@ -473,17 +485,21 @@ func decodeTaskUpdated(raw []byte) (any, error) {
 	if err := json.Unmarshal(raw, &w); err != nil {
 		return nil, err
 	}
+
 	patch := map[string]any{}
+
 	if len(w.Patch) > 0 {
 		var p map[string]any
 		if err := json.Unmarshal(w.Patch, &p); err == nil && p != nil {
 			patch = p
 		}
 	}
+
 	status := ""
 	if s, ok := patch["status"].(string); ok {
 		status = s
 	}
+
 	return TaskUpdatedMessage{
 		TaskID:    w.TaskID,
 		Patch:     patch,
@@ -504,13 +520,16 @@ func decodeHookEvent(raw []byte, subtype string) (any, error) {
 	if err := json.Unmarshal(raw, &w); err != nil {
 		return nil, err
 	}
+
 	name := w.HookEvent
 	if name == "" {
 		name = w.HookName
 	}
+
 	if name == "" {
 		name = w.HookEventName
 	}
+
 	return HookEventMessage{
 		Subtype:       subtype,
 		HookEventName: name,
@@ -531,10 +550,12 @@ func decodeAssistantMessage(raw []byte) (any, error) {
 	if err := json.Unmarshal(raw, &w); err != nil {
 		return nil, err
 	}
+
 	blocks, err := decodeContentBlocks(w.Message.Content)
 	if err != nil {
 		return nil, err
 	}
+
 	return AssistantMessage{
 		Content:    blocks,
 		Model:      w.Message.Model,
@@ -554,8 +575,10 @@ func decodeUserMessage(raw []byte) (any, error) {
 		return nil, err
 	}
 
-	var asArray []json.RawMessage
-	var blocks []ContentBlock
+	var (
+		asArray []json.RawMessage
+		blocks  []ContentBlock
+	)
 	if err := json.Unmarshal(w.Message.Content, &asArray); err == nil {
 		blocks, err = decodeContentBlocks(asArray)
 		if err != nil {
@@ -566,6 +589,7 @@ func decodeUserMessage(raw []byte) (any, error) {
 		if err := json.Unmarshal(w.Message.Content, &asString); err != nil {
 			return nil, err
 		}
+
 		blocks = []ContentBlock{TextBlock{Text: asString}}
 	}
 
@@ -582,6 +606,7 @@ func decodeStreamEvent(raw []byte) (any, error) {
 	if err := json.Unmarshal(raw, &w); err != nil {
 		return nil, err
 	}
+
 	return StreamEvent{
 		UUID:            w.UUID,
 		SessionID:       w.SessionID,
@@ -599,6 +624,7 @@ func decodeRateLimitEvent(raw []byte) (any, error) {
 	if err := json.Unmarshal(raw, &w); err != nil {
 		return nil, err
 	}
+
 	return RateLimitEvent{
 		RateLimitInfo: w.RateLimitInfo,
 		UUID:          w.UUID,
@@ -615,6 +641,7 @@ func decodeConversationReset(raw []byte) (any, error) {
 	if err := json.Unmarshal(raw, &w); err != nil {
 		return nil, err
 	}
+
 	return ConversationResetMessage{
 		NewConversationID: w.NewConversationID,
 		UUID:              w.UUID,
@@ -622,7 +649,7 @@ func decodeConversationReset(raw []byte) (any, error) {
 	}, nil
 }
 
-func decodeContentBlocks(raw []json.RawMessage) ([]ContentBlock, error) {
+func decodeContentBlocks(raw []json.RawMessage) ([]ContentBlock, error) { //nolint:gocyclo  // flat per-block-type decoding
 	blocks := make([]ContentBlock, 0, len(raw))
 	for _, r := range raw {
 		var head struct {
@@ -631,6 +658,7 @@ func decodeContentBlocks(raw []json.RawMessage) ([]ContentBlock, error) {
 		if err := json.Unmarshal(r, &head); err != nil {
 			return nil, err
 		}
+
 		switch head.Type {
 		case "text":
 			var b struct {
@@ -639,6 +667,7 @@ func decodeContentBlocks(raw []json.RawMessage) ([]ContentBlock, error) {
 			if err := json.Unmarshal(r, &b); err != nil {
 				return nil, err
 			}
+
 			blocks = append(blocks, TextBlock{Text: b.Text})
 		case "thinking":
 			var b struct {
@@ -648,6 +677,7 @@ func decodeContentBlocks(raw []json.RawMessage) ([]ContentBlock, error) {
 			if err := json.Unmarshal(r, &b); err != nil {
 				return nil, err
 			}
+
 			blocks = append(blocks, ThinkingBlock{Thinking: b.Thinking, Signature: b.Signature})
 		case "tool_use":
 			var b struct {
@@ -658,6 +688,7 @@ func decodeContentBlocks(raw []json.RawMessage) ([]ContentBlock, error) {
 			if err := json.Unmarshal(r, &b); err != nil {
 				return nil, err
 			}
+
 			blocks = append(blocks, ToolUseBlock{ID: b.ID, Name: b.Name, Input: b.Input})
 		case "tool_result":
 			var b struct {
@@ -668,6 +699,7 @@ func decodeContentBlocks(raw []json.RawMessage) ([]ContentBlock, error) {
 			if err := json.Unmarshal(r, &b); err != nil {
 				return nil, err
 			}
+
 			blocks = append(blocks, ToolResultBlock{ToolUseID: b.ToolUseID, Content: b.Content, IsError: b.IsError})
 		case "server_tool_use":
 			var b struct {
@@ -678,6 +710,7 @@ func decodeContentBlocks(raw []json.RawMessage) ([]ContentBlock, error) {
 			if err := json.Unmarshal(r, &b); err != nil {
 				return nil, err
 			}
+
 			blocks = append(blocks, ServerToolUseBlock{ID: b.ID, Name: b.Name, Input: b.Input})
 		case "advisor_tool_result":
 			var b struct {
@@ -687,11 +720,13 @@ func decodeContentBlocks(raw []json.RawMessage) ([]ContentBlock, error) {
 			if err := json.Unmarshal(r, &b); err != nil {
 				return nil, err
 			}
+
 			blocks = append(blocks, ServerToolResultBlock{ToolUseID: b.ToolUseID, Content: b.Content})
 		default:
-			blocks = append(blocks, RawBlock{Type: head.Type, Raw: json.RawMessage(r)})
+			blocks = append(blocks, RawBlock{Type: head.Type, Raw: r})
 		}
 	}
+
 	return blocks, nil
 }
 
@@ -717,6 +752,7 @@ func decodeResultMessage(raw []byte) (any, error) {
 	if err := json.Unmarshal(raw, &w); err != nil {
 		return nil, err
 	}
+
 	return ResultMessage{
 		DurationMs:        w.DurationMs,
 		IsError:           w.IsError,
@@ -745,6 +781,7 @@ func decodeControlRequest(raw []byte) (any, error) {
 	if err := json.Unmarshal(raw, &w); err != nil {
 		return nil, err
 	}
+
 	var inner struct {
 		Subtype               string         `json:"subtype"`
 		ToolName              string         `json:"tool_name"`
@@ -764,6 +801,7 @@ func decodeControlRequest(raw []byte) (any, error) {
 	if err := json.Unmarshal(w.Request, &inner); err != nil {
 		return nil, err
 	}
+
 	return &controlRequest{
 		RequestID:             w.RequestID,
 		Subtype:               inner.Subtype,
@@ -788,6 +826,7 @@ func decodeControlResponse(raw []byte) (any, error) {
 	if err := json.Unmarshal(raw, &w); err != nil {
 		return nil, err
 	}
+
 	return &controlResponse{
 		RequestID: w.Response.RequestID,
 		Subtype:   w.Response.Subtype,
@@ -803,5 +842,6 @@ func decodeControlCancelRequest(raw []byte) (any, error) {
 	if err := json.Unmarshal(raw, &w); err != nil {
 		return nil, err
 	}
+
 	return &controlCancelRequest{RequestID: w.RequestID}, nil
 }

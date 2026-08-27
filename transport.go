@@ -47,6 +47,7 @@ type transport struct {
 // then the caller-supplied vars on top. Mirrors the Python SDK's connect().
 func buildEnv(caller []string) []string {
 	entrypointSet := false
+
 	for _, kv := range caller {
 		if strings.HasPrefix(kv, "CLAUDE_CODE_ENTRYPOINT=") {
 			entrypointSet = true
@@ -55,25 +56,32 @@ func buildEnv(caller []string) []string {
 	}
 
 	inherited := os.Environ()
+
 	env := make([]string, 0, len(inherited)+len(caller)+1)
 	for _, kv := range inherited {
 		if kv == "CLAUDECODE" || strings.HasPrefix(kv, "CLAUDECODE=") {
 			continue
 		}
+
 		env = append(env, kv)
 	}
+
 	if !entrypointSet {
 		env = append(env, "CLAUDE_CODE_ENTRYPOINT=sdk-go")
 	}
+
 	return append(env, caller...)
 }
 
 func startTransport(worktreePath, cliPath string, args, env []string, stderr io.Writer) (*transport, error) {
+	//nolint:gosec,noctx  // spawning the CLI is the package's purpose; cliPath is caller-supplied, and lifecycle is owned by transport.close (stdin-close -> grace -> kill), not a context
 	cmd := exec.Command(cliPath, args...)
+
 	cmd.Dir = worktreePath
 	if env != nil {
 		cmd.Env = env
 	}
+
 	if stderr != nil {
 		cmd.Stderr = stderr
 	}
@@ -82,6 +90,7 @@ func startTransport(worktreePath, cliPath string, args, env []string, stderr io.
 	if err != nil {
 		return nil, fmt.Errorf("claudecode: stdin pipe: %w", err)
 	}
+
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("claudecode: stdout pipe: %w", err)
@@ -98,6 +107,7 @@ func startTransport(worktreePath, cliPath string, args, env []string, stderr io.
 		closed: make(chan struct{}),
 	}
 	go t.readLoop(stdout)
+
 	return t, nil
 }
 
@@ -106,6 +116,7 @@ func (t *transport) readLoop(stdout io.Reader) {
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
+
 	for scanner.Scan() {
 		line := append([]byte(nil), scanner.Bytes()...)
 		select {
@@ -114,6 +125,7 @@ func (t *transport) readLoop(stdout io.Reader) {
 			return
 		}
 	}
+
 	if err := scanner.Err(); err != nil {
 		select {
 		case t.lines <- lineResult{err: err}:
@@ -127,13 +139,16 @@ func (t *transport) writeLine(v any) error {
 	if err != nil {
 		return fmt.Errorf("claudecode: marshal: %w", err)
 	}
+
 	data = append(data, '\n')
 
 	t.writeMu.Lock()
 	defer t.writeMu.Unlock()
+
 	if _, err := t.stdin.Write(data); err != nil {
 		return fmt.Errorf("claudecode: write stdin: %w", err)
 	}
+
 	return nil
 }
 
@@ -144,6 +159,7 @@ func (t *transport) writeLine(v any) error {
 // exited badly on its own within the grace period is reported.
 func (t *transport) close(gracePeriod time.Duration) error {
 	var closeErr error
+
 	t.closeOnce.Do(func() {
 		close(t.closed)
 		_ = t.stdin.Close()
@@ -156,8 +172,10 @@ func (t *transport) close(gracePeriod time.Duration) error {
 			closeErr = err
 		case <-time.After(gracePeriod):
 			_ = t.cmd.Process.Kill()
+
 			<-done
 		}
 	})
+
 	return closeErr
 }

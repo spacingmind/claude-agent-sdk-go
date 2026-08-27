@@ -478,7 +478,10 @@ type Client struct {
 	// mutex guards its tool map).
 	sdkMcpServers map[string]*SdkMcpServer
 
-	baseCtx    context.Context
+	// baseCtx is the Client-lifetime context that Close cancels so every
+	// inbound control-request handler (each derived from it) stops before
+	// teardown; it is never passed as a function parameter by design.
+	baseCtx    context.Context //nolint:containedctx  // Client-lifetime base for handler contexts, cancelled by Close
 	baseCancel context.CancelFunc
 }
 
@@ -511,6 +514,7 @@ func New(worktreePath string, opts ...Option) (*Client, error) {
 		if _, dup := sdkServers[s.name]; dup {
 			return nil, fmt.Errorf("claudecode: duplicate SDK MCP server name %q", s.name)
 		}
+
 		sdkServers[s.name] = s
 	}
 
@@ -518,6 +522,7 @@ func New(worktreePath string, opts ...Option) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	o.mcpConfig = mcpConfig
 
 	args := buildArgs(&o)
@@ -528,12 +533,14 @@ func New(worktreePath string, opts ...Option) (*Client, error) {
 	if o.env != nil {
 		env = buildEnv(o.env)
 	}
+
 	tr, err := startTransport(worktreePath, o.cliPath, args, env, o.logWriter)
 	if err != nil {
 		return nil, err
 	}
 
 	baseCtx, baseCancel := context.WithCancel(context.Background())
+
 	c := &Client{
 		tr:               tr,
 		permissionPolicy: o.permissionPolicy,
@@ -557,33 +564,43 @@ func New(worktreePath string, opts ...Option) (*Client, error) {
 	// only the IDs travel on the wire -- the callbacks stay Go-side, looked
 	// up by ID when hook_callback requests arrive.
 	var initExtra map[string]any
+
 	if len(o.hooks) > 0 {
 		hooksPayload := map[string][]map[string]any{}
 		counter := 0
+
 		for event, matchers := range o.hooks {
 			for _, m := range matchers {
 				var ids []string
+
 				for _, cb := range m.Hooks {
 					id := fmt.Sprintf("hook_%d", counter)
 					counter++
+
 					c.hookMu.Lock()
 					c.hookCallbacks[id] = cb
 					c.hookMu.Unlock()
+
 					ids = append(ids, id)
 				}
+
 				entry := map[string]any{"matcher": m.Matcher, "hookCallbackIds": ids}
 				if m.Timeout > 0 {
 					entry["timeout"] = m.Timeout.Seconds()
 				}
+
 				hooksPayload[string(event)] = append(hooksPayload[string(event)], entry)
 			}
 		}
+
 		initExtra = map[string]any{"hooks": hooksPayload}
 	}
+
 	if _, err := c.sendControlRequest(context.Background(), "initialize", initExtra); err != nil {
 		_ = c.Close()
 		return nil, fmt.Errorf("claudecode: initialize: %w", err)
 	}
+
 	return c, nil
 }
 
@@ -591,7 +608,7 @@ func New(worktreePath string, opts ...Option) (*Client, error) {
 // _build_command: the always-present stream-json flags and permission mode,
 // then each optionally-configured flag in the reference's order. Options
 // left unset produce no flag at all.
-func buildArgs(o *options) []string {
+func buildArgs(o *options) []string { //nolint:gocyclo,funlen  // flat one-flag-per-branch mapping, mirrors the Python reference's order
 	args := []string{
 		"--output-format", "stream-json",
 		"--verbose",
@@ -622,27 +639,35 @@ func buildArgs(o *options) []string {
 	if len(o.allowedTools) > 0 {
 		args = append(args, "--allowedTools", strings.Join(o.allowedTools, ","))
 	}
+
 	if o.maxTurns > 0 {
 		args = append(args, "--max-turns", strconv.Itoa(o.maxTurns))
 	}
+
 	if o.maxBudgetUSD != nil {
 		args = append(args, "--max-budget-usd", strconv.FormatFloat(*o.maxBudgetUSD, 'f', -1, 64))
 	}
+
 	if len(o.disallowedTools) > 0 {
 		args = append(args, "--disallowedTools", strings.Join(o.disallowedTools, ","))
 	}
+
 	if o.taskBudget != nil {
 		args = append(args, "--task-budget", strconv.Itoa(*o.taskBudget))
 	}
+
 	if o.model != "" {
 		args = append(args, "--model", o.model)
 	}
+
 	if o.fallbackModel != "" {
 		args = append(args, "--fallback-model", o.fallbackModel)
 	}
+
 	if len(o.betas) > 0 {
 		args = append(args, "--betas", strings.Join(o.betas, ","))
 	}
+
 	if o.permissionPromptTool != "" {
 		args = append(args, "--permission-prompt-tool", o.permissionPromptTool)
 	}
@@ -652,26 +677,33 @@ func buildArgs(o *options) []string {
 	if o.settings != "" {
 		args = append(args, "--settings", o.settings)
 	}
+
 	for _, dir := range o.addDirs {
 		args = append(args, "--add-dir", dir)
 	}
+
 	if o.mcpConfig != "" {
 		args = append(args, "--mcp-config", o.mcpConfig)
 	}
+
 	if o.includePartial {
 		args = append(args, "--include-partial-messages")
 	}
+
 	if o.includeHookEvents {
 		args = append(args, "--include-hook-events")
 	}
+
 	if o.strictMcpConfig {
 		args = append(args, "--strict-mcp-config")
 	}
+
 	if o.settingSources != nil {
 		// Equals form so a source name can never be parsed as a separate
 		// flag, mirroring the Python SDK's guard.
 		args = append(args, "--setting-sources="+strings.Join(o.settingSources, ","))
 	}
+
 	for _, dir := range o.pluginDirs {
 		args = append(args, "--plugin-dir", dir)
 	}
@@ -696,6 +728,7 @@ func buildArgs(o *options) []string {
 		case thinkingDisabled:
 			args = append(args, "--thinking", "disabled")
 		}
+
 		if t.kind != thinkingDisabled && t.display != "" {
 			args = append(args, "--thinking-display", t.display)
 		}
@@ -706,6 +739,7 @@ func buildArgs(o *options) []string {
 	if o.effort != "" {
 		args = append(args, "--effort", o.effort)
 	}
+
 	if o.jsonSchema != "" {
 		args = append(args, "--json-schema", o.jsonSchema)
 	}
@@ -713,23 +747,29 @@ func buildArgs(o *options) []string {
 	if o.continueConversation {
 		args = append(args, "--continue")
 	}
+
 	if o.resume != "" {
 		args = append(args, "--resume="+o.resume)
 	}
+
 	if o.sessionID != "" {
 		args = append(args, "--session-id="+o.sessionID)
 	}
+
 	if o.forkSession {
 		args = append(args, "--fork-session")
 	}
+
 	if o.resumeSessionAt != "" {
 		args = append(args, "--resume-session-at="+o.resumeSessionAt)
 	}
+
 	if o.resumeDropsTurn != nil {
 		args = append(args, "--resume-drops-turn="+*o.resumeDropsTurn)
 	}
 
 	args = append(args, "--input-format", "stream-json")
+
 	return args
 }
 
@@ -765,13 +805,15 @@ func (c *Client) Prompt(ctx context.Context, text string, updates chan<- Message
 		if res, ok := msg.(ResultMessage); ok {
 			return res, nil
 		}
+
 		select {
 		case updates <- msg:
 		case <-ctx.Done():
 			return ResultMessage{}, ctx.Err()
 		}
 	}
-	return ResultMessage{}, fmt.Errorf("claudecode: cli exited before sending a result message")
+
+	return ResultMessage{}, errors.New("claudecode: cli exited before sending a result message")
 }
 
 // Close cancels the read loop and any in-flight inbound control-request
@@ -780,6 +822,7 @@ func (c *Client) Prompt(ctx context.Context, text string, updates chan<- Message
 // force-kill sequence. Safe to call more than once.
 func (c *Client) Close() error {
 	var closeErr error
+
 	c.closeOnce.Do(func() {
 		close(c.closing)
 		// Cancels the base context every inbound handler derives from, so
@@ -791,5 +834,6 @@ func (c *Client) Close() error {
 		c.handlerWG.Wait()
 		closeErr = c.tr.close(c.closeGracePeriod)
 	})
+
 	return closeErr
 }

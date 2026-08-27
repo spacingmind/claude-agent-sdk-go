@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -11,16 +12,17 @@ import (
 // captureSpawn runs one Prompt turn against the "capture" fake-CLI
 // scenario and returns the argv and environment the client spawned it
 // with. The fake CLI encodes both in the result message's text.
-func captureSpawn(t *testing.T, opts []Option) (args []string, env []string) {
+func captureSpawn(t *testing.T, opts []Option) (args, env []string) {
 	t.Helper()
 
 	c, err := New(t.TempDir(), opts...)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	updates := make(chan Message)
+
 	res, err := c.Prompt(context.Background(), "hi", updates)
 	if err != nil {
 		t.Fatalf("Prompt() error = %v", err)
@@ -33,6 +35,7 @@ func captureSpawn(t *testing.T, opts []Option) (args []string, env []string) {
 	if err := json.Unmarshal([]byte(res.Result), &dump); err != nil {
 		t.Fatalf("unmarshal captured dump %q: %v", res.Result, err)
 	}
+
 	return dump.Args, dump.Env
 }
 
@@ -190,12 +193,12 @@ func TestClient_FlagsForOptions(t *testing.T) {
 		},
 		{
 			name: "extra args valued",
-			opts: []Option{WithExtraArgs(map[string]*string{"flag": strPtr("value")})},
+			opts: []Option{WithExtraArgs(map[string]*string{"flag": new("value")})},
 			post: []string{"--flag", "value"},
 		},
 		{
 			name: "extra args dash-leading value uses equals form",
-			opts: []Option{WithExtraArgs(map[string]*string{"flag": strPtr("-injected")})},
+			opts: []Option{WithExtraArgs(map[string]*string{"flag": new("-injected")})},
 			post: []string{"--flag=-injected"},
 		},
 		{
@@ -313,13 +316,16 @@ func TestClient_FlagsForOptions(t *testing.T) {
 			if perm == "" {
 				perm = "default"
 			}
+
 			wantArgs := []string{"--output-format", "stream-json", "--verbose"}
 			if !tt.sysSet {
 				wantArgs = append(wantArgs, "--system-prompt", "")
 			}
+
 			wantArgs = append(wantArgs, tt.pre...)
 			wantArgs = append(wantArgs, "--permission-mode", perm)
 			wantArgs = append(wantArgs, tt.post...)
+
 			wantArgs = append(wantArgs, "--input-format", "stream-json")
 			if got, want := strings.Join(args, " "), strings.Join(wantArgs, " "); got != want {
 				t.Errorf("argv =\n  %q\nwant\n  %q", got, want)
@@ -351,7 +357,7 @@ func TestClient_ExtraArgsRoundTripRaw(t *testing.T) {
 	t.Parallel()
 
 	opts := append(fakeCLIOptions(t, "capture"),
-		WithExtraArgs(map[string]*string{"weird": strPtr("raw value")}))
+		WithExtraArgs(map[string]*string{"weird": new("raw value")}))
 	args, _ := captureSpawn(t, opts)
 
 	if !containsToken(args, "--weird") || !containsToken(args, "raw value") {
@@ -369,6 +375,7 @@ func TestClient_EnvMerge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("os.Executable() error = %v", err)
 	}
+
 	opts := []Option{
 		WithCLIPath(self),
 		WithEnv(
@@ -392,9 +399,11 @@ func TestClient_EnvMerge(t *testing.T) {
 	if v, ok := envMap["CLAUDECODE"]; ok {
 		t.Errorf("CLAUDECODE leaked into subprocess env as %q", v)
 	}
+
 	if envMap["CLAUDE_CODE_ENTRYPOINT"] != "sdk-go" {
 		t.Errorf("CLAUDE_CODE_ENTRYPOINT = %q, want %q", envMap["CLAUDE_CODE_ENTRYPOINT"], "sdk-go")
 	}
+
 	if envMap["MY_TEST_VAR"] != "hello" {
 		t.Errorf("MY_TEST_VAR = %q, want %q", envMap["MY_TEST_VAR"], "hello")
 	}
@@ -412,6 +421,7 @@ func TestClient_EnvEntrypointCallerOverrideWins(t *testing.T) {
 	if err != nil {
 		t.Fatalf("os.Executable() error = %v", err)
 	}
+
 	opts := []Option{
 		WithCLIPath(self),
 		WithEnv(
@@ -428,18 +438,12 @@ func TestClient_EnvEntrypointCallerOverrideWins(t *testing.T) {
 		k, v, _ := strings.Cut(kv, "=")
 		envMap[k] = v
 	}
+
 	if envMap["CLAUDE_CODE_ENTRYPOINT"] != "custom" {
 		t.Errorf("CLAUDE_CODE_ENTRYPOINT = %q, want custom (caller override wins)", envMap["CLAUDE_CODE_ENTRYPOINT"])
 	}
 }
 
 func containsToken(args []string, want string) bool {
-	for _, a := range args {
-		if a == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(args, want)
 }
-
-func strPtr(s string) *string { return &s }

@@ -16,12 +16,14 @@ type decodeLineTestCase struct {
 
 func runDecodeLineTests(t *testing.T, tests []decodeLineTestCase) {
 	t.Helper()
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := decodeLine([]byte(tt.line))
 			if err != nil {
 				t.Fatalf("decodeLine() error = %v", err)
 			}
+
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("decodeLine() = %#v, want %#v", got, tt.want)
 			}
@@ -421,6 +423,7 @@ func TestDecodeLine_MalformedLinesStillError(t *testing.T) {
 			t.Errorf("decodeLine(%q) error = nil, want non-nil", line)
 		}
 	}
+
 	if got, err := decodeLine([]byte("   ")); got != nil || err != nil {
 		t.Errorf("decodeLine(blank) = (%v, %v), want (nil, nil)", got, err)
 	}
@@ -432,10 +435,12 @@ func TestDecodeContentBlocks_Direct(t *testing.T) {
 		json.RawMessage(`{"type":"advisor_tool_result","tool_use_id":"a","content":null}`),
 		json.RawMessage(`{"type":"unmodeled"}`),
 	}
+
 	got, err := decodeContentBlocks(raw)
 	if err != nil {
 		t.Fatalf("decodeContentBlocks() error = %v", err)
 	}
+
 	want := []ContentBlock{
 		ServerToolUseBlock{ID: "a", Name: "n", Input: map[string]any{"k": "v"}},
 		ServerToolResultBlock{ToolUseID: "a", Content: json.RawMessage(`null`)},
