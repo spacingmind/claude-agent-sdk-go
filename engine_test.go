@@ -35,10 +35,10 @@ func fakeCLIEnvOpts(t *testing.T, scenario string, extra ...string) []Option {
 type scriptablePolicy struct {
 	mu     sync.Mutex
 	got    []CanUseToolRequest
-	decide func(ctx context.Context, req CanUseToolRequest) (bool, map[string]any, string, []map[string]any, bool, error)
+	decide func(ctx context.Context, req CanUseToolRequest) (bool, map[string]any, string, []PermissionUpdate, bool, error)
 }
 
-func (p *scriptablePolicy) Decide(ctx context.Context, req CanUseToolRequest) (bool, map[string]any, string, []map[string]any, bool, error) {
+func (p *scriptablePolicy) Decide(ctx context.Context, req CanUseToolRequest) (bool, map[string]any, string, []PermissionUpdate, bool, error) {
 	p.mu.Lock()
 	p.got = append(p.got, req)
 	p.mu.Unlock()
@@ -57,7 +57,7 @@ func (p *scriptablePolicy) requests() []CanUseToolRequest {
 // control_cancel_request path end to end.
 type blockingPolicy struct{}
 
-func (blockingPolicy) Decide(ctx context.Context, _ CanUseToolRequest) (bool, map[string]any, string, []map[string]any, bool, error) {
+func (blockingPolicy) Decide(ctx context.Context, _ CanUseToolRequest) (bool, map[string]any, string, []PermissionUpdate, bool, error) {
 	<-ctx.Done()
 	return false, nil, "", nil, false, ctx.Err()
 }
@@ -528,10 +528,13 @@ func TestClient_MCPStatusAndContextUsageParse(t *testing.T) {
 func TestClient_CanUseToolRoundTripFields(t *testing.T) {
 	t.Parallel()
 
-	policy := &scriptablePolicy{decide: func(_ context.Context, req CanUseToolRequest) (bool, map[string]any, string, []map[string]any, bool, error) {
+	policy := &scriptablePolicy{decide: func(_ context.Context, req CanUseToolRequest) (bool, map[string]any, string, []PermissionUpdate, bool, error) {
 		switch req.ToolUseID {
 		case "req-a": // allow with updatedPermissions
-			return true, req.Input, "", []map[string]any{{"permission": "test"}}, false, nil
+			return true, req.Input, "", []PermissionUpdate{
+				{Type: "addRules", Rules: []PermissionRuleValue{{ToolName: "Bash", RuleContent: "rm -rf *"}}, Behavior: "deny", Destination: "session"},
+				{Type: "setMode", Mode: "plan"},
+			}, false, nil
 		case "req-b": // allow without updatedPermissions
 			return true, req.Input, "", nil, false, nil
 		default: // deny with interrupt
@@ -602,8 +605,28 @@ func TestClient_CanUseToolRoundTripFields(t *testing.T) {
 	inner0, _ := resps[0]["response"].(map[string]any)
 
 	perms, ok := inner0["updatedPermissions"].([]any)
-	if !ok || len(perms) != 1 {
-		t.Fatalf("response 0 updatedPermissions = %#v, want one entry", inner0["updatedPermissions"])
+	if !ok || len(perms) != 2 {
+		t.Fatalf("response 0 updatedPermissions = %#v, want two entries", inner0["updatedPermissions"])
+	}
+
+	perm0, _ := perms[0].(map[string]any)
+	if perm0["type"] != "addRules" || perm0["behavior"] != "deny" || perm0["destination"] != "session" {
+		t.Fatalf("response 0 perm[0] = %#v", perm0)
+	}
+	if rules, _ := perm0["rules"].([]any); len(rules) != 1 {
+		t.Fatalf("response 0 perm[0] rules = %#v", perm0["rules"])
+	} else if r, _ := rules[0].(map[string]any); r["toolName"] != "Bash" || r["ruleContent"] != "rm -rf *" {
+		t.Fatalf("response 0 perm[0] rules[0] = %#v", r)
+	}
+	perm1, _ := perms[1].(map[string]any)
+	if perm1["type"] != "setMode" || perm1["mode"] != "plan" {
+		t.Fatalf("response 0 perm[1] = %#v", perm1)
+	}
+	if _, present := perm1["rules"]; present {
+		t.Fatalf("response 0 perm[1] unexpectedly contains rules: %#v", perm1)
+	}
+	if _, present := perm1["destination"]; present {
+		t.Fatalf("response 0 perm[1] unexpectedly contains destination: %#v", perm1)
 	}
 
 	inner2, _ := resps[2]["response"].(map[string]any)
