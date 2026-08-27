@@ -352,16 +352,42 @@ persistence (local resume, and — if ever needed — a pluggable
   merged to `main`. Table-driven tests in `messages_test.go` cover all new
   content blocks, top-level message types, system subtypes (including
   `task_updated`'s defensive parsing), and `ResultMessage`'s new fields.
-- **Not started** — Section A (persistent client / concurrency model),
-  Section B (outbound control protocol), Section C (inbound control
-  protocol): next up, implemented together since the concurrency model *is*
-  the control-protocol machinery.
+- **Done** — Sections A/B/C (persistent client / concurrency model,
+  outbound + inbound control protocol, AC 1-17): implemented on
+  `sdk-parity/streaming-client-engine`. `New()` keeps eager-connect and now
+  starts one persistent read-loop goroutine and blocks on the `initialize`
+  handshake before returning. `Prompt` is reimplemented over
+  `Query`/`ReceiveResponse` (signature and observable behavior unchanged);
+  new methods: `Query`, `QueryWithSession`, `ReceiveMessages`,
+  `ReceiveResponse`, `Interrupt`, `SetPermissionMode`, `SetModel`,
+  `RewindFiles`, `GetMCPStatus`, `GetContextUsage`, `ReconnectMCPServer`,
+  `ToggleMCPServer`, `StopTask`. Outbound requests are correlated by a
+  collision-safe `request_id` with a 60s default timeout and error/timeout
+  force-removal from the pending map; CLI exit or `Close` force-resolves
+  all pending requests. Inbound `can_use_tool` handlers run per-request
+  (cancellable via `control_cancel_request`, no response written when
+  cancelled) with the enriched request fields and the widened
+  `PermissionPolicy.Decide` return tuple (`updatedPermissions` on allow,
+  `interrupt` on deny, present-only-when-set on the wire); `hook_callback`
+  dispatch scaffolding (unexported `HookCallback` map) is in place per the
+  plan's phase-F boundary, and `mcp_message` still returns
+  "unsupported control request subtype". Tests in `engine_test.go` cover
+  the lifecycle/concurrency, outbound-shape, and inbound groups, including
+  out-of-order response correlation, crash force-resolution, timeout
+  cleanup, and the cancelled-handler no-response guarantee.
 - **Not started** — Section F (Hooks): depends on B/C (control protocol)
   and D (options), planned after A/B/C.
 
 ## Validation
 
-Not yet applicable — to be filled in per Acceptance Criterion as
+- Sections A/B/C verified via the `verify` skill on
+  `sdk-parity/streaming-client-engine`: `go build -buildvcs=false ./...`,
+  `go test -race ./...` (stable across `-count=2`, suite completes in ~7s,
+  no leaked subprocesses), `go vet ./...`, `gofmt -l .` — all clean. Test
+  scenarios for the lifecycle/concurrency, outbound, and inbound groups are
+  covered in `engine_test.go` against scripted fake-CLI scenarios
+  (`two_turns`, `interruptible`, `reorder`, `crash`, `capture_stdin`,
+  `control_echo`, `control_traffic`, `policy_roundtrip`, `hook_dispatch`). — to be filled in per Acceptance Criterion as
 implementation proceeds (`go build -buildvcs=false ./...`, `go test -race
 ./...`, `go vet ./...`, `gofmt -l .` via the `verify` skill, plus the test
 scenarios above).

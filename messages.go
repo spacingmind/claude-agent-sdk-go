@@ -283,8 +283,9 @@ type RawBlock struct {
 func (RawBlock) isContentBlock() {}
 
 // controlRequest is the CLI's request for a permission (or other control)
-// decision. It is protocol-internal: Client.Prompt handles it via the
-// configured PermissionPolicy and never surfaces it on the updates channel.
+// decision. It is protocol-internal: the client's read loop dispatches it
+// (PermissionPolicy for can_use_tool, hook callbacks for hook_callback) and
+// never surfaces it on the message stream.
 type controlRequest struct {
 	RequestID             string
 	Subtype               string
@@ -292,6 +293,28 @@ type controlRequest struct {
 	Input                 map[string]any
 	ToolUseID             string
 	PermissionSuggestions []any
+	Title                 string
+	DisplayName           string
+	Description           string
+	DecisionReason        string
+	BlockedPath           string
+	AgentID               string
+	CallbackID            string
+}
+
+// controlResponse is the CLI's response to an outbound control request,
+// correlated by request_id against the client's pending-request map.
+type controlResponse struct {
+	RequestID string
+	Subtype   string
+	Response  json.RawMessage
+	Error     string
+}
+
+// controlCancelRequest is the CLI asking the SDK to cancel a still-running
+// inbound control-request handler.
+type controlCancelRequest struct {
+	RequestID string
 }
 
 // decodeLine parses one line of the CLI's NDJSON stdout. It returns
@@ -331,6 +354,10 @@ func decodeLine(raw []byte) (any, error) {
 		return decodeConversationReset(raw)
 	case "control_request":
 		return decodeControlRequest(raw)
+	case "control_response":
+		return decodeControlResponse(raw)
+	case "control_cancel_request":
+		return decodeControlCancelRequest(raw)
 	default:
 		return nil, nil
 	}
@@ -722,6 +749,13 @@ func decodeControlRequest(raw []byte) (any, error) {
 		Input                 map[string]any `json:"input"`
 		ToolUseID             string         `json:"tool_use_id"`
 		PermissionSuggestions []any          `json:"permission_suggestions"`
+		Title                 string         `json:"title"`
+		DisplayName           string         `json:"display_name"`
+		Description           string         `json:"description"`
+		DecisionReason        string         `json:"decision_reason"`
+		BlockedPath           string         `json:"blocked_path"`
+		AgentID               string         `json:"agent_id"`
+		CallbackID            string         `json:"callback_id"`
 	}
 	if err := json.Unmarshal(w.Request, &inner); err != nil {
 		return nil, err
@@ -733,5 +767,35 @@ func decodeControlRequest(raw []byte) (any, error) {
 		Input:                 inner.Input,
 		ToolUseID:             inner.ToolUseID,
 		PermissionSuggestions: inner.PermissionSuggestions,
+		Title:                 inner.Title,
+		DisplayName:           inner.DisplayName,
+		Description:           inner.Description,
+		DecisionReason:        inner.DecisionReason,
+		BlockedPath:           inner.BlockedPath,
+		AgentID:               inner.AgentID,
+		CallbackID:            inner.CallbackID,
 	}, nil
+}
+
+func decodeControlResponse(raw []byte) (any, error) {
+	var w wireControlResponse
+	if err := json.Unmarshal(raw, &w); err != nil {
+		return nil, err
+	}
+	return &controlResponse{
+		RequestID: w.Response.RequestID,
+		Subtype:   w.Response.Subtype,
+		Response:  w.Response.Response,
+		Error:     w.Response.Error,
+	}, nil
+}
+
+func decodeControlCancelRequest(raw []byte) (any, error) {
+	var w struct {
+		RequestID string `json:"request_id"`
+	}
+	if err := json.Unmarshal(raw, &w); err != nil {
+		return nil, err
+	}
+	return &controlCancelRequest{RequestID: w.RequestID}, nil
 }

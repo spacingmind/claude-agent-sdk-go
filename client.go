@@ -8,10 +8,12 @@ package claudecode
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -375,10 +377,34 @@ func withCloseGracePeriod(d time.Duration) Option {
 }
 
 // Client drives one claude CLI subprocess rooted at a task's git worktree.
+//
+// A single read-loop goroutine (started in New) owns the CLI's stdout for
+// the Client's lifetime: it resolves outbound control requests, dispatches
+// inbound ones onto per-request handler goroutines, and forwards every other
+// message onto the persistent stream exposed by ReceiveMessages.
 type Client struct {
 	tr               *transport
 	permissionPolicy PermissionPolicy
 	closeGracePeriod time.Duration
+	controlTimeout   time.Duration
+
+	msgs    chan Message
+	closing chan struct{}
+
+	closeOnce sync.Once
+
+	pending   map[string]*pendingEntry
+	pendingMu sync.Mutex
+
+	inflight   map[string]context.CancelFunc
+	inflightMu sync.Mutex
+	handlerWG  sync.WaitGroup
+
+	hookMu        sync.Mutex
+	hookCallbacks map[string]HookCallback
+
+	baseCtx    context.Context
+	baseCancel context.CancelFunc
 }
 
 // New spawns `claude` with its working directory set to worktreePath, ready
@@ -417,11 +443,30 @@ func New(worktreePath string, opts ...Option) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Client{
+
+	baseCtx, baseCancel := context.WithCancel(context.Background())
+	c := &Client{
 		tr:               tr,
 		permissionPolicy: o.permissionPolicy,
 		closeGracePeriod: o.closeGracePeriod,
-	}, nil
+		controlTimeout:   defaultControlTimeout,
+		msgs:             make(chan Message, 100),
+		closing:          make(chan struct{}),
+		pending:          make(map[string]*pendingEntry),
+		inflight:         make(map[string]context.CancelFunc),
+		hookCallbacks:    make(map[string]HookCallback),
+		baseCtx:          baseCtx,
+		baseCancel:       baseCancel,
+	}
+	go c.readLoop()
+
+	// The control channel must be initialized before the CLI accepts any
+	// prompt; a failed handshake is a construction failure.
+	if _, err := c.sendControlRequest(context.Background(), "initialize", nil); err != nil {
+		_ = c.Close()
+		return nil, fmt.Errorf("claudecode: initialize: %w", err)
+	}
+	return c, nil
 }
 
 // buildArgs constructs the CLI argv, mirroring the Python SDK's
@@ -552,8 +597,9 @@ func buildArgs(o *options) []string {
 }
 
 type wireUserTurn struct {
-	Type    string          `json:"type"`
-	Message wireUserContent `json:"message"`
+	Type      string          `json:"type"`
+	SessionID string          `json:"session_id,omitempty"`
+	Message   wireUserContent `json:"message"`
 }
 
 type wireUserContent struct {
@@ -567,116 +613,46 @@ type wireUserContent struct {
 // received. updates is always closed before Prompt returns, including on
 // error. can_use_tool control requests are handled internally via the
 // client's PermissionPolicy and never appear on updates.
+//
+// Prompt is now a convenience wrapper over the persistent engine: it sends
+// the turn with Query and forwards from ReceiveResponse until the turn's
+// ResultMessage.
 func (c *Client) Prompt(ctx context.Context, text string, updates chan<- Message) (ResultMessage, error) {
 	defer close(updates)
 
-	if err := c.tr.writeLine(wireUserTurn{
-		Type:    "user",
-		Message: wireUserContent{Role: "user", Content: text},
-	}); err != nil {
-		return ResultMessage{}, fmt.Errorf("claudecode: send prompt: %w", err)
+	if err := c.Query(ctx, text); err != nil {
+		return ResultMessage{}, err
 	}
 
-	for {
+	for msg := range c.ReceiveResponse(ctx) {
+		if res, ok := msg.(ResultMessage); ok {
+			return res, nil
+		}
 		select {
+		case updates <- msg:
 		case <-ctx.Done():
 			return ResultMessage{}, ctx.Err()
-		case lr, ok := <-c.tr.lines:
-			if !ok {
-				return ResultMessage{}, fmt.Errorf("claudecode: cli exited before sending a result message")
-			}
-			if lr.err != nil {
-				return ResultMessage{}, fmt.Errorf("claudecode: read cli output: %w", lr.err)
-			}
-
-			parsed, err := decodeLine(lr.data)
-			if err != nil || parsed == nil {
-				// Malformed or unrecognized line: skip rather than fail the
-				// whole turn over it.
-				continue
-			}
-
-			switch v := parsed.(type) {
-			case *controlRequest:
-				if err := c.handleControlRequest(ctx, v); err != nil {
-					return ResultMessage{}, fmt.Errorf("claudecode: respond to control request: %w", err)
-				}
-			case ResultMessage:
-				return v, nil
-			case Message:
-				select {
-				case updates <- v:
-				case <-ctx.Done():
-					return ResultMessage{}, ctx.Err()
-				}
-			}
 		}
 	}
+	return ResultMessage{}, fmt.Errorf("claudecode: cli exited before sending a result message")
 }
 
-type wireControlResponse struct {
-	Type     string                     `json:"type"`
-	Response wireControlResponsePayload `json:"response"`
-}
-
-type wireControlResponsePayload struct {
-	Subtype   string         `json:"subtype"`
-	RequestID string         `json:"request_id"`
-	Response  map[string]any `json:"response,omitempty"`
-	Error     string         `json:"error,omitempty"`
-}
-
-func (c *Client) handleControlRequest(ctx context.Context, req *controlRequest) error {
-	if req.Subtype != "can_use_tool" {
-		return c.tr.writeLine(wireControlResponse{
-			Type: "control_response",
-			Response: wireControlResponsePayload{
-				Subtype:   "error",
-				RequestID: req.RequestID,
-				Error:     fmt.Sprintf("unsupported control request subtype %q", req.Subtype),
-			},
-		})
-	}
-
-	allow, updatedInput, denyMessage, err := c.permissionPolicy.Decide(ctx, CanUseToolRequest{
-		ToolName:              req.ToolName,
-		Input:                 req.Input,
-		ToolUseID:             req.ToolUseID,
-		PermissionSuggestions: req.PermissionSuggestions,
-	})
-	if err != nil {
-		return c.tr.writeLine(wireControlResponse{
-			Type: "control_response",
-			Response: wireControlResponsePayload{
-				Subtype:   "error",
-				RequestID: req.RequestID,
-				Error:     err.Error(),
-			},
-		})
-	}
-
-	payload := map[string]any{"behavior": "deny", "message": denyMessage}
-	if allow {
-		in := updatedInput
-		if in == nil {
-			in = req.Input
-		}
-		payload = map[string]any{"behavior": "allow", "updatedInput": in}
-	}
-
-	return c.tr.writeLine(wireControlResponse{
-		Type: "control_response",
-		Response: wireControlResponsePayload{
-			Subtype:   "success",
-			RequestID: req.RequestID,
-			Response:  payload,
-		},
-	})
-}
-
-// Close closes the CLI's stdin, giving it a grace period to flush and exit
-// on its own, then force-kills it if it hasn't. Safe to call more than
-// once.
+// Close cancels the read loop and any in-flight inbound control-request
+// handlers, force-fails pending outbound control requests, then tears down
+// the CLI subprocess via the existing stdin-close -> grace period ->
+// force-kill sequence. Safe to call more than once.
 func (c *Client) Close() error {
-	return c.tr.close(c.closeGracePeriod)
+	var closeErr error
+	c.closeOnce.Do(func() {
+		close(c.closing)
+		// Cancels the base context every inbound handler derives from, so
+		// even handlers registered after the inflight snapshot are stopped
+		// before the wait below.
+		c.baseCancel()
+		c.cancelAllInflightHandlers()
+		c.failAllPending(errors.New("claudecode: client closed"))
+		c.handlerWG.Wait()
+		closeErr = c.tr.close(c.closeGracePeriod)
+	})
+	return closeErr
 }
