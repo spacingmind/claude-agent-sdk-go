@@ -216,10 +216,10 @@ func (t *transport) writeLine(v any) error {
 // close closes stdin (so a well-behaved CLI can flush and exit on its own),
 // then escalates: wait up to gracePeriod for a natural exit, SIGTERM and
 // wait another gracePeriod, and finally SIGKILL -- a total worst case of
-// roughly 3x gracePeriod. An error from Wait after a forced SIGKILL is
-// expected (the process died by signal, not by choice) and is not reported;
-// an error from a CLI that exited on its own (naturally or on SIGTERM)
-// within a grace period is reported.
+// roughly 3x gracePeriod. An error from Wait after we ourselves signaled the
+// process to die (SIGTERM or SIGKILL) is expected and not reported; only an
+// error from a CLI that exited badly entirely on its own, before any signal
+// was sent, is reported.
 func (t *transport) close(gracePeriod time.Duration) error {
 	var closeErr error
 
@@ -235,11 +235,12 @@ func (t *transport) close(gracePeriod time.Duration) error {
 		case <-time.After(gracePeriod):
 		}
 
-		// Stage 2: SIGTERM.
+		// Stage 2: SIGTERM. Like the SIGKILL stage below, a Wait error here
+		// is expected (we're the ones who signaled it to die) and is not
+		// reported.
 		_ = t.cmd.Process.Signal(syscall.SIGTERM)
 		select {
 		case <-t.waitDone:
-			closeErr = t.waitErr
 			return
 		case <-time.After(gracePeriod):
 		}

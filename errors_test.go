@@ -64,9 +64,8 @@ func TestClient_ErrNilAfterCleanClose(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	// The fake "hang" CLI now exits at close's SIGTERM stage, so Close
-	// reports the signal wait error; that's this test's teardown, not
-	// its subject (Err() must stay nil regardless).
+	// The fake "hang" CLI exits at close's SIGTERM stage; Err() must stay
+	// nil for any Close()-initiated shutdown, regardless of which stage.
 	_ = c.Close()
 
 	// Wait for the stream to actually end so Err() reflects the final
