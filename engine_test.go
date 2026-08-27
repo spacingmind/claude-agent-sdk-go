@@ -628,8 +628,8 @@ func TestClient_InboundControlEdgeCases(t *testing.T) {
 
 	if sub, _ := out.Mcp["subtype"].(string); sub != "error" {
 		t.Fatalf("mcp_message response subtype = %q, want error", sub)
-	} else if msg, _ := out.Mcp["error"].(string); !strings.Contains(msg, "unsupported control request subtype") {
-		t.Fatalf("mcp_message error = %q, want unsupported-subtype message", msg)
+	} else if msg, _ := out.Mcp["error"].(string); !strings.Contains(msg, "Missing server_name or message for MCP request") {
+		t.Fatalf("mcp_message error = %q, want missing-fields message", msg)
 	}
 
 	if sub, _ := out.Hook["subtype"].(string); sub != "error" {

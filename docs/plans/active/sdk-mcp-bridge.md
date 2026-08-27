@@ -210,8 +210,54 @@ control requests after `initialize` succeeds**
 
 ## Progress
 
-Not started.
+Complete. Implemented in `mcp.go` (registration API, JSON-RPC dispatch,
+`--mcp-config` merge), `client.go` (`WithSDKMcpServer`, duplicate-name
+detection, `sdkMcpServers` field threaded from options into the Client),
+`engine.go` (`case "mcp_message"` in `handleControlRequest`),
+`messages.go` (`controlRequest` decodes `server_name`/`message`), and
+tested via fake-CLI scenarios `mcp_bridge` and `mcp_concurrent`
+(`fakecli_test.go`) plus `mcp_test.go` / flag assertions in
+`mcp_test.go` and `flags_test.go`-style `captureSpawn` reuse.
+
+Naming resolution per AC 1: phase 1's `McpToolAnnotations` collides, so
+this phase's type is `SdkMcpToolAnnotations` (as pre-decided in
+Decisions).
 
 ## Validation
 
-Not yet applicable.
+- **AC 1-3** (`McpContent`, `McpToolResult`, `McpToolHandler`,
+  `SdkMcpToolAnnotations`, `NewMcpTool`/`WithMcpToolAnnotations`,
+  `NewSdkMcpServer` with mutex-guarded tool map): exercised end-to-end by
+  `TestClient_McpMessageDispatch` and `TestClient_McpMessageConcurrentCalls`
+  (`mcp_test.go`).
+- **AC 4** (`WithSDKMcpServer`, duplicate-name `New()` error):
+  `TestClient_SdkMcpServerRegistrationFlags` (distinct names both appear)
+  and `TestClient_SdkMcpServerDuplicateNameError`.
+- **AC 5** (`--mcp-config` sdk entries, inline-JSON merge, file-path
+  error, unchanged passthrough when no SDK servers):
+  `TestClient_SdkMcpServerRegistrationFlags` (exact `{"type":"sdk",...}`
+  entry shape), `TestClient_SdkMcpServerWithMCPConfigMerge` (merge,
+  SDK-wins collision, file-path `New()` error); no-SDK-servers passthrough
+  pinned by phase 1's existing `flags_test.go` "mcp config" case
+  (untouched, still passing).
+- **AC 6** (wire dispatch): `TestClient_McpMessageDispatch` covers
+  initialize, tools/list (annotations present/absent with omitempty),
+  tools/call success (text and image content), unregistered server
+  (JSON-RPC -32601 inside a control_response SUCCESS envelope --
+  explicitly asserted), unknown tool and handler error (both
+  `isError:true` JSON-RPC successes), panicking handler (recovered,
+  `isError:true`, process alive), unknown method (JSON-RPC -32601), and
+  notifications/initialized (result with no `id` key). Missing
+  server_name/message top-level error pinned by the updated
+  `TestClient_InboundControlEdgeCases` (now expects the
+  missing-fields error instead of unsupported-subtype) and re-asserted by
+  `TestClient_McpUnregisteredServerUnsupportedPinsKept`.
+- **AC 7** (concurrency): `TestClient_McpMessageConcurrentCalls` sends
+  two same-server and one cross-server tools/call back-to-back; handlers
+  block until all three are provably in flight simultaneously (the
+  hooks_concurrent deadlock-proof pattern), so serialized dispatch would
+  hang rather than pass.
+
+`go build -buildvcs=false ./...`, `go test -race -count=1 ./...`,
+`go vet ./...`, `gofmt -l .` all clean; no leaked fake-CLI test
+processes.

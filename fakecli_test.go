@@ -563,6 +563,100 @@ func runFakeCLI() {
 			"result":     string(dump),
 		})
 
+	case "mcp_bridge":
+		// A scripted tour of the mcp_message dispatch surface: initialize,
+		// tools/list, a successful tools/call, an unregistered server, an
+		// unknown tool, a failing handler, a panicking handler, an unknown
+		// JSON-RPC method, the initialized notification, and an
+		// image-content tool call on a second server. Responses are dumped
+		// into the result for assertion.
+		ackInitialize()
+		stdin.Scan() // consume the prompt line
+
+		mcpReq := func(id, server string, msg map[string]any) map[string]any {
+			if id != "" {
+				msg["id"] = id
+			}
+			msg["jsonrpc"] = "2.0"
+			return map[string]any{
+				"subtype":     "mcp_message",
+				"server_name": server,
+				"message":     msg,
+			}
+		}
+		requests := []struct {
+			id     string
+			server string
+			msg    map[string]any
+		}{
+			{"m1", "test-server", map[string]any{"method": "initialize"}},
+			{"m2", "test-server", map[string]any{"method": "tools/list"}},
+			{"m3", "test-server", map[string]any{"method": "tools/call", "params": map[string]any{"name": "echo", "arguments": map[string]any{"x": "hi"}}}},
+			{"m4", "nope-server", map[string]any{"method": "tools/list"}},
+			{"m5", "test-server", map[string]any{"method": "tools/call", "params": map[string]any{"name": "missing"}}},
+			{"m6", "test-server", map[string]any{"method": "tools/call", "params": map[string]any{"name": "fails"}}},
+			{"m7", "test-server", map[string]any{"method": "tools/call", "params": map[string]any{"name": "panics"}}},
+			{"m8", "test-server", map[string]any{"method": "bogus/method"}},
+			{"m9", "test-server", map[string]any{"method": "notifications/initialized"}},
+			{"m10", "other-server", map[string]any{"method": "tools/call", "params": map[string]any{"name": "img"}}},
+		}
+		resps := map[string]map[string]any{}
+		for _, r := range requests {
+			sendControlRequestToClient(r.id, mcpReq(r.id, r.server, r.msg))
+			resps[r.id] = readControlResponse()
+		}
+		dump, err := json.Marshal(resps)
+		if err != nil {
+			panic(err)
+		}
+		writeLine(map[string]any{
+			"type":       "result",
+			"subtype":    "success",
+			"is_error":   false,
+			"num_turns":  1,
+			"session_id": "sess-1",
+			"result":     string(dump),
+		})
+
+	case "mcp_concurrent":
+		// Sends three tools/call requests back-to-back without waiting for
+		// any response: two on the same server, one on a second server.
+		// The handlers block until all three are provably in flight, so a
+		// client that serialized dispatch would deadlock here (same shape
+		// as hooks_concurrent).
+		ackInitialize()
+		stdin.Scan() // consume the prompt line
+		call := func(id, server, tool string) {
+			sendControlRequestToClient(id, map[string]any{
+				"subtype":     "mcp_message",
+				"server_name": server,
+				"message": map[string]any{
+					"jsonrpc": "2.0",
+					"id":      id,
+					"method":  "tools/call",
+					"params":  map[string]any{"name": tool},
+				},
+			})
+		}
+		call("mc-1", "test-server", "block-a")
+		call("mc-2", "test-server", "block-b")
+		call("mc-3", "other-server", "block-c")
+		r1 := readControlResponse()
+		r2 := readControlResponse()
+		r3 := readControlResponse()
+		dump, err := json.Marshal([]map[string]any{r1, r2, r3})
+		if err != nil {
+			panic(err)
+		}
+		writeLine(map[string]any{
+			"type":       "result",
+			"subtype":    "success",
+			"is_error":   false,
+			"num_turns":  1,
+			"session_id": "sess-1",
+			"result":     string(dump),
+		})
+
 	case "two_turns":
 		// Two full turn cycles on one subprocess: proves sequential Prompt
 		// calls reuse the same CLI process.

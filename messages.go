@@ -300,6 +300,8 @@ type controlRequest struct {
 	BlockedPath           string
 	AgentID               string
 	CallbackID            string
+	ServerName            string
+	Message               map[string]any
 }
 
 // controlResponse is the CLI's response to an outbound control request,
@@ -756,6 +758,8 @@ func decodeControlRequest(raw []byte) (any, error) {
 		BlockedPath           string         `json:"blocked_path"`
 		AgentID               string         `json:"agent_id"`
 		CallbackID            string         `json:"callback_id"`
+		ServerName            string         `json:"server_name"`
+		Message               map[string]any `json:"message"`
 	}
 	if err := json.Unmarshal(w.Request, &inner); err != nil {
 		return nil, err
@@ -774,6 +778,8 @@ func decodeControlRequest(raw []byte) (any, error) {
 		BlockedPath:           inner.BlockedPath,
 		AgentID:               inner.AgentID,
 		CallbackID:            inner.CallbackID,
+		ServerName:            inner.ServerName,
+		Message:               inner.Message,
 	}, nil
 }
 

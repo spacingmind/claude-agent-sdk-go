@@ -252,8 +252,7 @@ func (c *Client) writeControlResponse(requestID string, payload wireControlRespo
 
 // handleControlRequest answers one inbound control request: can_use_tool via
 // the PermissionPolicy, hook_callback via the registered callback map, and
-// an "unsupported subtype" error for everything else (mcp_message included
-// -- the SDK-MCP bridge is a deferred follow-on plan).
+// mcp_message via the in-process SDK MCP servers.
 func (c *Client) handleControlRequest(ctx context.Context, req *controlRequest) {
 	writeError := func(errStr string) {
 		if ctx.Err() != nil {
@@ -331,6 +330,21 @@ func (c *Client) handleControlRequest(ctx context.Context, req *controlRequest) 
 		if out != nil {
 			raw, _ = json.Marshal(out)
 		}
+		_ = c.writeControlResponse(req.RequestID, wireControlResponsePayload{
+			Subtype:  "success",
+			Response: raw,
+		})
+
+	case "mcp_message":
+		if req.ServerName == "" || len(req.Message) == 0 {
+			writeError("Missing server_name or message for MCP request")
+			return
+		}
+		resp := c.dispatchMcpMessage(ctx, req.ServerName, req.Message)
+		if ctx.Err() != nil {
+			return
+		}
+		raw, _ := json.Marshal(map[string]any{"mcp_response": resp})
 		_ = c.writeControlResponse(req.RequestID, wireControlResponsePayload{
 			Subtype:  "success",
 			Response: raw,
