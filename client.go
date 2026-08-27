@@ -101,6 +101,13 @@ type options struct {
 	jsonSchema           string
 	env                  []string
 	hooks                map[HookEvent][]HookMatcher
+
+	continueConversation bool
+	resume               string
+	sessionID            string
+	forkSession          bool
+	resumeSessionAt      string
+	resumeDropsTurn      *string
 }
 
 // WithPermissionMode sets the CLI's --permission-mode flag (e.g. "default",
@@ -375,6 +382,46 @@ func WithHooks(hooks map[HookEvent][]HookMatcher) Option {
 	return func(o *options) { o.hooks = hooks }
 }
 
+// WithContinueConversation resumes the most recent conversation in the
+// CLI's local session store, adding --continue.
+func WithContinueConversation() Option {
+	return func(o *options) { o.continueConversation = true }
+}
+
+// WithResume resumes a specific local session by ID, sent as
+// --resume=<sessionID> (equals-joined). No client-side validation --
+// malformed values are the CLI's problem to reject, matching the Python
+// reference's flag-construction layer.
+func WithResume(sessionID string) Option {
+	return func(o *options) { o.resume = sessionID }
+}
+
+// WithSessionID pins the CLI-created session ID, sent as
+// --session-id=<sessionID> (equals-joined).
+func WithSessionID(sessionID string) Option {
+	return func(o *options) { o.sessionID = sessionID }
+}
+
+// WithForkSession forks the resumed session instead of continuing it in
+// place, adding --fork-session.
+func WithForkSession() Option {
+	return func(o *options) { o.forkSession = true }
+}
+
+// WithResumeSessionAt resumes a session at a specific transcript entry,
+// sent as --resume-session-at=<entryUUID> (equals-joined).
+func WithResumeSessionAt(entryUUID string) Option {
+	return func(o *options) { o.resumeSessionAt = entryUUID }
+}
+
+// WithResumeDropsTurn drops a turn when resuming, sent as
+// --resume-drops-turn=<turnUUID> (equals-joined). Pointer-backed so an
+// explicitly-empty argument still emits --resume-drops-turn= -- Python's
+// condition is "is not None", not truthiness.
+func WithResumeDropsTurn(turnUUID string) Option {
+	return func(o *options) { o.resumeDropsTurn = &turnUUID }
+}
+
 // withExtraEnv and withCloseGracePeriod are test-only knobs (unexported: no
 // production caller needs to override the subprocess environment or the
 // close grace period, but the fake-CLI test harness needs both).
@@ -628,6 +675,25 @@ func buildArgs(o *options) []string {
 	}
 	if o.jsonSchema != "" {
 		args = append(args, "--json-schema", o.jsonSchema)
+	}
+
+	if o.continueConversation {
+		args = append(args, "--continue")
+	}
+	if o.resume != "" {
+		args = append(args, "--resume="+o.resume)
+	}
+	if o.sessionID != "" {
+		args = append(args, "--session-id="+o.sessionID)
+	}
+	if o.forkSession {
+		args = append(args, "--fork-session")
+	}
+	if o.resumeSessionAt != "" {
+		args = append(args, "--resume-session-at="+o.resumeSessionAt)
+	}
+	if o.resumeDropsTurn != nil {
+		args = append(args, "--resume-drops-turn="+*o.resumeDropsTurn)
 	}
 
 	args = append(args, "--input-format", "stream-json")

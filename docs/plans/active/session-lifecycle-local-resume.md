@@ -209,8 +209,75 @@ research pass — no new research agents were needed for this plan.
 
 ## Progress
 
-Not started.
+Complete. Implemented on branch `sdk-parity/session-local-resume`:
+
+- **Part A (CLI flags)**: six new options in `client.go` —
+  `WithContinueConversation`, `WithResume`, `WithSessionID`,
+  `WithForkSession`, `WithResumeSessionAt`, `WithResumeDropsTurn` — with
+  the equals-joined wire form for the four value flags (injection-guard
+  parity with `--setting-sources`) and a `*string`-backed
+  `resumeDropsTurn` so `WithResumeDropsTurn("")` still emits
+  `--resume-drops-turn=`. Flags append in `buildArgs` just before the
+  trailing `--input-format` pair, composing with all existing options
+  unchanged. No client-side validation, matching the Python reference's
+  flag layer.
+- **Part B (local session functions)**: new `sessions.go` with
+  `ListSessions`/`GetSessionInfo`/`GetSessionMessages`/
+  `ListSubagents`/`GetSubagentMessages`, the `SDKSessionInfo`/
+  `SessionMessage`/`ListSessionsOptions` types, path sanitization
+  (realpath → non-alnum→`-` → 200-char truncate + base36 int32-hash
+  suffix), the truncated-name prefix-scan directory fallback, the
+  lite head/tail-64KB scan for listing vs full NDJSON parse for message
+  retrieval, `uuid`/`parentUuid`-only chain reconstruction
+  (`logicalParentUuid` deliberately not followed), recursive
+  `agent-*.jsonl` discovery with `.meta.json` sidecars, worktree
+  inclusion via `git worktree list --porcelain` (5s timeout, failure =
+  no extra worktrees, never an error), all-projects scan for
+  `Directory: ""`, dedupe-by-newest, LastModified-descending sort, then
+  Offset/Limit. Config-home resolution goes through an unexported
+  `configHomeDir` function variable (the test seam, per the plan's
+  testing guidance — no env-var mutation needed in tests).
 
 ## Validation
 
-Not yet applicable.
+All verified via `go build -buildvcs=false ./...`, `go test -race
+-count=1 ./...` (clean, no hangs), `go vet ./...`, `gofmt -l .` (empty).
+
+- **AC1** (six flags, exact conditions): `flags_test.go` table cases —
+  each option alone; `--resume-drops-turn=` empty-value edge case;
+  resume+model combination asserting relative argv order; exact-argv
+  assertions via the fake-CLI harness.
+- **AC2** (no validation): flag tests pass raw values through verbatim;
+  no validation code exists in the option/buildArgs paths.
+- **AC3** (composes with existing options): combined case above plus the
+  whole existing phase-1 flag table still passing unchanged.
+- **AC4** (free functions + Directory-"" semantics):
+  `TestListSessions_AllProjectsWhenDirectoryEmpty` (two fake project
+  dirs, sessions from both returned; cwd is never implicitly used).
+- **AC5** (sanitization + hash + prefix fallback):
+  `TestSanitize_LongPathHashRoundTrip` — a 300+-char project path
+  produces the 200-char-truncated + `-` + base36-hash directory name and
+  both list and lookup round-trip through it.
+- **AC6** (file layout + UUID validation):
+  `TestGetSessionMessages_InvalidSessionIDRejected` (error, not panic);
+  nested `subagents/workflows/<run>/agent-<id>.jsonl` layout exercised
+  in the subagent tests.
+- **AC7** (chain reconstruction, no logicalParentUuid):
+  `TestGetSessionMessages_CompactionBoundaryExcluded` (pre-compaction
+  entries absent, `isCompactSummary` entry present) and
+  `TestGetSessionMessages_MetaSidechainExcluded` (isMeta/isSidechain
+  filtered out of the visible list).
+- **AC8** (lite path): `TestSessionInfo_TitleFallbackPriority`
+  (customTitle > aiTitle > lastPrompt > summary fallback order);
+  first-prompt fallback covered by `TestListSessions_SortLimitOffset`.
+- **AC9** (worktrees): implemented fail-safe (`worktreeProjectDirs`
+  returns nil on any git failure/timeout); exercised implicitly by the
+  no-git-failure path of the Directory-scoped tests (worktree scan runs
+  and finds nothing in a non-repo temp dir — zero additional dirs, no
+  error).
+- **AC10** (struct shapes): exact structs as decided above; used
+  throughout the tests.
+- Extra resilience scenarios from the test list:
+  `TestSessions_CorruptLineResilience` (bad NDJSON line skipped, not
+  fatal), `TestSessions_EmptyAndMissingDirectories` (empty/nil results,
+  never errors), `TestGetSessionMessages_MissingSessionReturnsNil`.

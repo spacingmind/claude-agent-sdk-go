@@ -253,6 +253,50 @@ func TestClient_FlagsForOptions(t *testing.T) {
 			opts: []Option{WithPermissionMode("acceptEdits")},
 			perm: "acceptEdits",
 		},
+		{
+			name: "continue conversation",
+			opts: []Option{WithContinueConversation()},
+			post: []string{"--continue"},
+		},
+		{
+			name: "resume",
+			opts: []Option{WithResume("abc-123")},
+			post: []string{"--resume=abc-123"},
+		},
+		{
+			name: "session id",
+			opts: []Option{WithSessionID("sid-1")},
+			post: []string{"--session-id=sid-1"},
+		},
+		{
+			name: "fork session",
+			opts: []Option{WithForkSession()},
+			post: []string{"--fork-session"},
+		},
+		{
+			name: "resume session at",
+			opts: []Option{WithResumeSessionAt("uuid-1")},
+			post: []string{"--resume-session-at=uuid-1"},
+		},
+		{
+			name: "resume drops turn",
+			opts: []Option{WithResumeDropsTurn("turn-1")},
+			post: []string{"--resume-drops-turn=turn-1"},
+		},
+		{
+			name: "resume drops turn empty is explicit",
+			opts: []Option{WithResumeDropsTurn("")},
+			post: []string{"--resume-drops-turn="},
+		},
+		{
+			name: "resume flags combined with model",
+			opts: []Option{
+				WithResume("abc-123"),
+				WithModel("claude-sonnet-4"),
+			},
+			pre:  []string{"--model", "claude-sonnet-4"},
+			post: []string{"--resume=abc-123"},
+		},
 	}
 
 	for _, tt := range tests {
