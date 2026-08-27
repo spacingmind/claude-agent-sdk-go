@@ -73,6 +73,11 @@ persistence (local resume, and — if ever needed — a pluggable
       Python source comments, not a porting artifact to "fix")
     - `ToggleMCPServer(serverName, enabled)` → `{"subtype":"mcp_toggle","serverName":<name>,"enabled":<bool>}`
     - `StopTask(taskID)` → `{"subtype":"stop_task","task_id":<id>}`
+    - `RewindFiles(userMessageID)` → `{"subtype":"rewind_files","user_message_id":<id>}`
+      (added after cross-checking a community Go port,
+      github.com/severity1/claude-agent-sdk-go, which independently
+      implements this same control surface — the omission here was a gap
+      in the original research pass, not a deliberate exclusion)
 11. `initialize` is sent once per connection before any prompt is accepted,
     carrying `hooks` (hook-matcher config with SDK-minted callback IDs, not
     the callbacks themselves — see F), and is a no-op if no hooks/agents/
