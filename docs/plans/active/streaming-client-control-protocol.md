@@ -375,8 +375,23 @@ persistence (local resume, and — if ever needed — a pluggable
   the lifecycle/concurrency, outbound-shape, and inbound groups, including
   out-of-order response correlation, crash force-resolution, timeout
   cleanup, and the cancelled-handler no-response guarantee.
-- **Not started** — Section F (Hooks): depends on B/C (control protocol)
-  and D (options), planned after A/B/C.
+- **Done** — Section F (Hooks, AC 27-30): implemented on
+  `sdk-parity/hooks`. `WithHooks(map[HookEvent][]HookMatcher)` registers
+  per-event matchers; `New()` mints `hook_<n>` IDs for every callback,
+  registers them into the callback map under `hookMu`, and sends them
+  keyed by event/matcher in the `initialize` payload (`matcher`,
+  `hookCallbackIds`, optional `timeout` in seconds; no `hooks` key at all
+  when nothing is configured). `HookCallback`'s return type widened to
+  `*HookJSONOutput` (nil = no output; existing dispatch's `out != nil`
+  check works unchanged with the pointer type). The 10 typed hook-input
+  structs plus the `DecodeHookInput[T]` generic decode helper live in
+  `permission.go` for callbacks that want a typed view — dispatch still
+  passes the raw map per the plan. Tests in `engine_test.go`
+  (`hooks_roundtrip`, `hooks_concurrent` fake-CLI scenarios) cover
+  registration wire shape, PreToolUse input decode, `HookJSONOutput`
+  round-trip including `hookSpecificOutput.permissionDecision`, and
+  concurrent same-event dispatch via a both-blocked-before-either-released
+  channel proof.
 
 ## Validation
 
@@ -387,7 +402,68 @@ persistence (local resume, and — if ever needed — a pluggable
   scenarios for the lifecycle/concurrency, outbound, and inbound groups are
   covered in `engine_test.go` against scripted fake-CLI scenarios
   (`two_turns`, `interruptible`, `reorder`, `crash`, `capture_stdin`,
-  `control_echo`, `control_traffic`, `policy_roundtrip`, `hook_dispatch`). — to be filled in per Acceptance Criterion as
-implementation proceeds (`go build -buildvcs=false ./...`, `go test -race
-./...`, `go vet ./...`, `gofmt -l .` via the `verify` skill, plus the test
-scenarios above).
+  `control_echo`, `control_traffic`, `policy_roundtrip`, `hook_dispatch`.
+- Sections D/E verified on their branches (`654a0ae`, `788a98a`); see those
+  commits' messages for the per-scenario mapping.
+- Section F verified on `sdk-parity/hooks`: same four commands, all clean;
+  `go test -race ./...` completes in ~7s with no hangs (the concurrent-
+  dispatch test would deadlock under serialization rather than flake).
+
+Final validation pass, Acceptance Criterion by criterion:
+
+- **AC 1** — `TestClient_SequentialPromptsReuseSubprocess` (two turns, one
+  process), `TestClient_ConcurrentControlRequestsCorrelateOutOfOrder`.
+- **AC 2** — single `readLoop` goroutine started once in `New`
+  (`engine.go`); all tests exercise it implicitly; out-of-order
+  correlation test proves sole-reader dispatch.
+- **AC 3** — serialized stdin writes via `transport.writeLine`
+  (`transport.go`); `TestClient_ConcurrentControlRequestsCorrelateOutOfOrder`
+  writes concurrently.
+- **AC 4** — `ReceiveMessages` persistent stream; used by every Prompt-based
+  test via `ReceiveResponse` forwarding.
+- **AC 5** — `TestClient_SequentialPromptsReuseSubprocess` and
+  `TestClient_InterruptMidTurn` exercise `Prompt` over the new engine.
+- **AC 6** — `TestClient_OutboundControlWireShapes` (all subtypes),
+  `TestClient_OutboundControlErrorResponse`, `TestClient_OutboundControlTimeout`.
+- **AC 7** — `TestClient_HooksSameEventDispatchedConcurrently` (two
+  same-event hooks in flight simultaneously); `hook_dispatch` scenario
+  covers per-request goroutine + `control_cancel_request` cancellation.
+- **AC 8** — `TestClient_CloseDuringPromptUnblocks`.
+- **AC 9** — `TestClient_CrashForceResolvesPendingRequests`.
+- **AC 10** — `TestClient_OutboundControlWireShapes` asserts each exact
+  wire shape against captured stdin.
+- **AC 11** — `TestClient_HooksRegisteredAndRoundTrip` asserts the
+  `initialize` payload carries `hooks` with `hookCallbackIds`/`matcher`;
+  other tests cover the plain no-hooks initialize (nil extra).
+- **AC 12** — `TestClient_OutboundControlWireShapes` asserts unique,
+  populated `request_id`s (`req_<counter>_<hex>` format in `nextRequestID`).
+- **AC 13** — `TestClient_CanUseToolRoundTripFields` (enriched fields,
+  `updatedPermissions` present-only-when-set, `interrupt` on deny).
+- **AC 14** — `TestClient_HooksRegisteredAndRoundTrip` and
+  `TestClient_HookCallbackDispatch` (`HookJSONOutput` verbatim as
+  `response_data`, no wrapping key).
+- **AC 15** — `TestClient_InboundControlEdgeCases` (`mcp_message` →
+  "unsupported control request subtype" pin).
+- **AC 16** — `hook_dispatch` scenario: cancelled handler never answers
+  (next response is for `req-h3`, not `req-h2`).
+- **AC 17** — `TestClient_UnknownControlResponseIgnored` and the malformed
+  lines in `control_traffic` / `malformed` scenarios.
+- **AC 18-21** — table-driven exact-argv tests in `flags_test.go` (D's
+  commit `654a0ae`), including unset-produces-no-flag, extra-args
+  passthrough, and env merge.
+- **AC 22-26** — table-driven decode tests in `messages_test.go` (E's
+  commit `788a98a`).
+- **AC 27** — `WithHooks` option with all ten `HookEvent` constants and
+  `HookMatcher{Matcher, Hooks, Timeout}`; exercised in
+  `TestClient_HooksRegisteredAndRoundTrip`.
+- **AC 28** — `hook_<n>` IDs minted in `New`, sent (not the callbacks) in
+  the `initialize` payload, looked up on `hook_callback`;
+  `TestClient_HooksRegisteredAndRoundTrip` end-to-end.
+- **AC 29** — `TestClient_HooksSameEventDispatchedConcurrently`: both
+  callbacks provably blocked simultaneously before either is released.
+- **AC 30** — the 10 typed input structs + `DecodeHookInput[T]`;
+  `TestClient_HooksRegisteredAndRoundTrip` decodes a real
+  PreToolUse input through the helper.
+
+All 30 acceptance criteria validated. `go build -buildvcs=false ./...`,
+`go test -race -count=1 ./...`, `go vet ./...`, `gofmt -l .` — all clean.

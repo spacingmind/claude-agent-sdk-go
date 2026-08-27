@@ -478,6 +478,91 @@ func runFakeCLI() {
 			"result":     string(dump),
 		})
 
+	case "hooks_roundtrip":
+		// Captures the initialize request's hooks payload, then sends a
+		// PreToolUse-shaped hook_callback for hook_0 and dumps both the
+		// payload and the client's control_response into the result.
+		if !stdin.Scan() {
+			panic("fake cli: stdin closed before initialize")
+		}
+		var initEnv struct {
+			RequestID string `json:"request_id"`
+			Request   struct {
+				Hooks map[string][]map[string]any `json:"hooks"`
+			} `json:"request"`
+		}
+		if err := json.Unmarshal(stdin.Bytes(), &initEnv); err != nil {
+			panic(err)
+		}
+		writeLine(controlResponseLine(initEnv.RequestID, map[string]any{"success": true}))
+		stdin.Scan() // consume the prompt line
+
+		sendControlRequestToClient("req-hk", map[string]any{
+			"subtype":     "hook_callback",
+			"callback_id": "hook_0",
+			"input": map[string]any{
+				"session_id":      "sess-1",
+				"transcript_path": "/tmp/t.jsonl",
+				"cwd":             "/tmp",
+				"hook_event_name": "PreToolUse",
+				"tool_name":       "Bash",
+				"tool_input":      map[string]any{"command": "ls"},
+				"tool_use_id":     "tool-1",
+			},
+			"tool_use_id": "tool-1",
+		})
+		hookResp := readControlResponse()
+
+		dump, err := json.Marshal(map[string]any{
+			"initialize_hooks": initEnv.Request.Hooks,
+			"hook":             hookResp,
+		})
+		if err != nil {
+			panic(err)
+		}
+		writeLine(map[string]any{
+			"type":       "result",
+			"subtype":    "success",
+			"is_error":   false,
+			"num_turns":  1,
+			"session_id": "sess-1",
+			"result":     string(dump),
+		})
+
+	case "hooks_concurrent":
+		// Sends two hook_callback requests back-to-back without waiting
+		// for either response -- the client must dispatch them
+		// concurrently or the callbacks (which block until both are
+		// entered) deadlock this scenario.
+		ackInitialize()
+		stdin.Scan() // consume the prompt line
+		sendControlRequestToClient("req-hc1", map[string]any{
+			"subtype":     "hook_callback",
+			"callback_id": "hook_0",
+			"input":       map[string]any{"hook_event_name": "PostToolUse"},
+			"tool_use_id": "tool-a",
+		})
+		sendControlRequestToClient("req-hc2", map[string]any{
+			"subtype":     "hook_callback",
+			"callback_id": "hook_1",
+			"input":       map[string]any{"hook_event_name": "PostToolUse"},
+			"tool_use_id": "tool-b",
+		})
+		r1 := readControlResponse()
+		r2 := readControlResponse()
+		dump, err := json.Marshal(map[string]any{"responses": []map[string]any{r1, r2}})
+		if err != nil {
+			panic(err)
+		}
+		writeLine(map[string]any{
+			"type":       "result",
+			"subtype":    "success",
+			"is_error":   false,
+			"num_turns":  1,
+			"session_id": "sess-1",
+			"result":     string(dump),
+		})
+
 	case "two_turns":
 		// Two full turn cycles on one subprocess: proves sequential Prompt
 		// calls reuse the same CLI process.

@@ -561,8 +561,11 @@ func TestClient_HookCallbackDispatch(t *testing.T) {
 	defer c.Close()
 
 	c.hookMu.Lock()
-	c.hookCallbacks[hookID] = func(_ context.Context, input map[string]any, toolUseID string) (map[string]any, error) {
-		return map[string]any{"decision": "block", "sawInput": input["a"], "tool": toolUseID}, nil
+	c.hookCallbacks[hookID] = func(_ context.Context, input map[string]any, toolUseID string) (*HookJSONOutput, error) {
+		return &HookJSONOutput{
+			Decision:           "block",
+			HookSpecificOutput: map[string]any{"sawInput": input["a"], "tool": toolUseID},
+		}, nil
 	}
 	c.hookMu.Unlock()
 
@@ -584,9 +587,10 @@ func TestClient_HookCallbackDispatch(t *testing.T) {
 	if hookResp == nil {
 		t.Fatalf("hook response missing response_data: %#v", out.Hook)
 	}
-	// The callback's map must come back verbatim as response_data, with no
-	// wrapping key.
-	if hookResp["decision"] != "block" || hookResp["sawInput"] != float64(1) || hookResp["tool"] != "tool-h" {
+	// The callback's output must come back verbatim as response_data, with
+	// no wrapping key.
+	hso, _ := hookResp["hookSpecificOutput"].(map[string]any)
+	if hookResp["decision"] != "block" || hso == nil || hso["sawInput"] != float64(1) || hso["tool"] != "tool-h" {
 		t.Fatalf("hook response_data = %#v, want callback output verbatim", hookResp)
 	}
 
@@ -636,5 +640,181 @@ func TestClient_InboundControlEdgeCases(t *testing.T) {
 
 	if sub, _ := out.Cut["subtype"].(string); sub != "success" {
 		t.Fatalf("can_use_tool response subtype = %q, want success: %#v", sub, out.Cut)
+	}
+}
+
+func TestClient_HooksRegisteredAndRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	var gotInput map[string]any
+	var gotToolUseID string
+	c, err := New(t.TempDir(), append(fakeCLIOptions(t, "hooks_roundtrip"),
+		WithHooks(map[HookEvent][]HookMatcher{
+			HookEventPreToolUse: {{
+				Matcher: "Bash",
+				Hooks: []HookCallback{func(_ context.Context, input map[string]any, toolUseID string) (*HookJSONOutput, error) {
+					gotInput, gotToolUseID = input, toolUseID
+					cont := false
+					return &HookJSONOutput{
+						Continue:           &cont,
+						Decision:           "approve",
+						HookSpecificOutput: map[string]any{"permissionDecision": "allow", "updatedInput": map[string]any{"command": "true"}},
+					}, nil
+				}},
+				Timeout: 30 * time.Second,
+			}},
+		}))...)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer c.Close()
+
+	updates := make(chan Message)
+	res, err := c.Prompt(context.Background(), "go", updates)
+	if err != nil {
+		t.Fatalf("Prompt() error = %v", err)
+	}
+
+	var out struct {
+		InitializeHooks map[string][]map[string]any `json:"initialize_hooks"`
+		Hook            map[string]any              `json:"hook"`
+	}
+	if err := json.Unmarshal([]byte(res.Result), &out); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+
+	// (b) the initialize request's hooks payload carries the matcher,
+	// minted callback ID, and timeout.
+	matchers := out.InitializeHooks["PreToolUse"]
+	if len(matchers) != 1 {
+		t.Fatalf("initialize hooks for PreToolUse = %#v, want one matcher entry", matchers)
+	}
+	if matchers[0]["matcher"] != "Bash" {
+		t.Fatalf("matcher = %#v, want Bash", matchers[0]["matcher"])
+	}
+	if matchers[0]["timeout"] != float64(30) {
+		t.Fatalf("timeout = %#v, want 30", matchers[0]["timeout"])
+	}
+	ids, _ := matchers[0]["hookCallbackIds"].([]any)
+	if len(ids) != 1 || ids[0] != "hook_0" {
+		t.Fatalf("hookCallbackIds = %#v, want [hook_0]", matchers[0]["hookCallbackIds"])
+	}
+
+	// (a) the callback received a PreToolUse-shaped input and its
+	// *HookJSONOutput round-tripped into the control_response.
+	in, err := DecodeHookInput[PreToolUseHookInput](gotInput)
+	if err != nil {
+		t.Fatalf("DecodeHookInput: %v", err)
+	}
+	if in.HookEventName != "PreToolUse" || in.ToolName != "Bash" ||
+		in.SessionID != "sess-1" || in.ToolInput["command"] != "ls" {
+		t.Fatalf("decoded hook input = %#v, want PreToolUseHookInput fields", in)
+	}
+	if gotToolUseID != "tool-1" {
+		t.Fatalf("toolUseID = %q, want tool-1", gotToolUseID)
+	}
+
+	hookResp, _ := out.Hook["response"].(map[string]any)
+	if hookResp == nil {
+		t.Fatalf("hook response missing response_data: %#v", out.Hook)
+	}
+	if cont, _ := hookResp["continue"].(bool); cont {
+		t.Fatalf("continue = %#v, want false", hookResp["continue"])
+	}
+	if hookResp["decision"] != "approve" {
+		t.Fatalf("decision = %#v, want approve", hookResp["decision"])
+	}
+	hso, _ := hookResp["hookSpecificOutput"].(map[string]any)
+	if hso == nil || hso["permissionDecision"] != "allow" {
+		t.Fatalf("hookSpecificOutput = %#v, want permissionDecision allow", hookResp["hookSpecificOutput"])
+	}
+	if up, _ := hso["updatedInput"].(map[string]any); up == nil || up["command"] != "true" {
+		t.Fatalf("hookSpecificOutput.updatedInput = %#v, want command true", hso["updatedInput"])
+	}
+}
+
+func TestClient_HooksSameEventDispatchedConcurrently(t *testing.T) {
+	t.Parallel()
+
+	entered := make(chan string, 2)
+	release := make(chan struct{})
+	newCB := func(id string) HookCallback {
+		return func(ctx context.Context, _ map[string]any, _ string) (*HookJSONOutput, error) {
+			entered <- id
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			out := &HookJSONOutput{Decision: "done-" + id}
+			return out, nil
+		}
+	}
+	c, err := New(t.TempDir(), append(fakeCLIOptions(t, "hooks_concurrent"),
+		WithHooks(map[HookEvent][]HookMatcher{
+			HookEventPostToolUse: {
+				{Matcher: "Bash", Hooks: []HookCallback{newCB("a")}},
+				{Matcher: "Write", Hooks: []HookCallback{newCB("b")}},
+			},
+		}))...)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer c.Close()
+
+	updates := make(chan Message)
+	promptDone := make(chan promptResult, 1)
+	go func() {
+		res, err := c.Prompt(context.Background(), "go", updates)
+		promptDone <- promptResult{res, err}
+	}()
+	go func() {
+		for range updates {
+		}
+	}()
+
+	// Both callbacks must be in flight simultaneously -- this blocks until
+	// both report entry (or the test times out, which is exactly the
+	// failure mode serialized dispatch would produce).
+	seen := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		select {
+		case id := <-entered:
+			seen[id] = true
+		case <-time.After(5 * time.Second):
+			t.Fatalf("only %d hook callbacks entered after 5s (seen %v), want 2 concurrently", i+1, seen)
+		}
+	}
+	close(release)
+
+	select {
+	case r := <-promptDone:
+		if r.err != nil {
+			t.Fatalf("Prompt() error = %v", r.err)
+		}
+		var out struct {
+			Responses []map[string]any `json:"responses"`
+		}
+		if err := json.Unmarshal([]byte(r.res.Result), &out); err != nil {
+			t.Fatalf("unmarshal result: %v", err)
+		}
+		if len(out.Responses) != 2 {
+			t.Fatalf("got %d hook responses, want 2", len(out.Responses))
+		}
+		decisions := map[string]bool{}
+		for _, r := range out.Responses {
+			inner, _ := r["response"].(map[string]any)
+			if inner == nil {
+				t.Fatalf("hook response missing response_data: %#v", r)
+			}
+			if d, _ := inner["decision"].(string); d != "" {
+				decisions[d] = true
+			}
+		}
+		if !decisions["done-a"] || !decisions["done-b"] {
+			t.Fatalf("hook response decisions = %v, want both done-a and done-b", decisions)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for Prompt() after releasing hooks")
 	}
 }

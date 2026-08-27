@@ -1,6 +1,11 @@
 package claudecode
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"time"
+)
 
 // CanUseToolRequest is the CLI's can_use_tool control request, asking
 // whether a specific tool invocation should proceed.
@@ -46,9 +51,163 @@ func (AutoDenyPolicy) Decide(_ context.Context, _ CanUseToolRequest) (bool, map[
 	return false, nil, "denied: no permission UI is wired up yet", nil, false, nil
 }
 
-// HookCallback is the dispatch seam for hook_callback control requests:
-// looked up by the callback ID the CLI sends, invoked with the request's
-// input, and its returned map is written back verbatim as response_data.
-// Deliberately loosely typed -- a future hooks phase adds the typed
-// hook-input variants and the public registration API.
-type HookCallback func(ctx context.Context, input map[string]any, toolUseID string) (map[string]any, error)
+// HookEvent names a point in the CLI's lifecycle where hook callbacks fire.
+type HookEvent string
+
+const (
+	HookEventPreToolUse         HookEvent = "PreToolUse"
+	HookEventPostToolUse        HookEvent = "PostToolUse"
+	HookEventPostToolUseFailure HookEvent = "PostToolUseFailure"
+	HookEventUserPromptSubmit   HookEvent = "UserPromptSubmit"
+	HookEventStop               HookEvent = "Stop"
+	HookEventSubagentStop       HookEvent = "SubagentStop"
+	HookEventPreCompact         HookEvent = "PreCompact"
+	HookEventNotification       HookEvent = "Notification"
+	HookEventSubagentStart      HookEvent = "SubagentStart"
+	HookEventPermissionRequest  HookEvent = "PermissionRequest"
+)
+
+// HookMatcher registers one or more callbacks for a HookEvent, optionally
+// restricted to tool names matching Matcher and bounded by Timeout.
+type HookMatcher struct {
+	Matcher string // tool-name pattern, e.g. "Bash" or "Write|Edit"; empty matches all
+	Hooks   []HookCallback
+	Timeout time.Duration // 0 = no explicit timeout sent (CLI default applies)
+}
+
+// HookCallback is invoked when the CLI sends a hook_callback control
+// request for an ID minted at initialize time. toolUseID is the request's
+// tool_use_id (empty when the event carries none). A nil *HookJSONOutput
+// with a nil error means "no output".
+type HookCallback func(ctx context.Context, input map[string]any, toolUseID string) (*HookJSONOutput, error)
+
+// HookJSONOutput is a hook callback's return value, matching the CLI's
+// hook-output wire shape.
+type HookJSONOutput struct {
+	Continue           *bool          `json:"continue,omitempty"`
+	SuppressOutput     bool           `json:"suppressOutput,omitempty"`
+	StopReason         string         `json:"stopReason,omitempty"`
+	Decision           string         `json:"decision,omitempty"`
+	SystemMessage      string         `json:"systemMessage,omitempty"`
+	Reason             string         `json:"reason,omitempty"`
+	HookSpecificOutput map[string]any `json:"hookSpecificOutput,omitempty"`
+	Async              bool           `json:"async,omitempty"`
+	AsyncTimeout       int            `json:"asyncTimeout,omitempty"`
+}
+
+// Common fields shared by every hook-input variant (see the CLI's hook
+// input schema). The dispatch mechanism passes the raw map to callbacks;
+// these typed views are opt-in via DecodeHookInput.
+type hookInputBase struct {
+	SessionID      string `json:"session_id"`
+	TranscriptPath string `json:"transcript_path"`
+	Cwd            string `json:"cwd"`
+	PermissionMode string `json:"permission_mode,omitempty"`
+	HookEventName  string `json:"hook_event_name"`
+}
+
+type hookInputAgent struct {
+	AgentID   string `json:"agent_id,omitempty"`
+	AgentType string `json:"agent_type,omitempty"`
+}
+
+// PreToolUseHookInput is the input for PreToolUse hook callbacks.
+type PreToolUseHookInput struct {
+	hookInputBase
+	hookInputAgent
+	ToolName  string         `json:"tool_name"`
+	ToolInput map[string]any `json:"tool_input"`
+	ToolUseID string         `json:"tool_use_id"`
+}
+
+// PostToolUseHookInput is the input for PostToolUse hook callbacks.
+type PostToolUseHookInput struct {
+	hookInputBase
+	hookInputAgent
+	ToolName     string         `json:"tool_name"`
+	ToolInput    map[string]any `json:"tool_input"`
+	ToolResponse any            `json:"tool_response"`
+	ToolUseID    string         `json:"tool_use_id"`
+}
+
+// PostToolUseFailureHookInput is the input for PostToolUseFailure hook
+// callbacks.
+type PostToolUseFailureHookInput struct {
+	hookInputBase
+	hookInputAgent
+	ToolName    string         `json:"tool_name"`
+	ToolInput   map[string]any `json:"tool_input"`
+	ToolUseID   string         `json:"tool_use_id"`
+	Error       string         `json:"error"`
+	IsInterrupt bool           `json:"is_interrupt,omitempty"`
+}
+
+// UserPromptSubmitHookInput is the input for UserPromptSubmit hook
+// callbacks.
+type UserPromptSubmitHookInput struct {
+	hookInputBase
+	Prompt string `json:"prompt"`
+}
+
+// StopHookInput is the input for Stop hook callbacks.
+type StopHookInput struct {
+	hookInputBase
+	StopHookActive bool `json:"stop_hook_active"`
+}
+
+// SubagentStopHookInput is the input for SubagentStop hook callbacks.
+type SubagentStopHookInput struct {
+	hookInputBase
+	StopHookActive      bool   `json:"stop_hook_active"`
+	AgentID             string `json:"agent_id"`
+	AgentTranscriptPath string `json:"agent_transcript_path"`
+	AgentType           string `json:"agent_type"`
+}
+
+// PreCompactHookInput is the input for PreCompact hook callbacks. Trigger
+// is "manual" or "auto".
+type PreCompactHookInput struct {
+	hookInputBase
+	Trigger            string `json:"trigger"`
+	CustomInstructions string `json:"custom_instructions,omitempty"`
+}
+
+// NotificationHookInput is the input for Notification hook callbacks.
+type NotificationHookInput struct {
+	hookInputBase
+	Message          string `json:"message"`
+	Title            string `json:"title,omitempty"`
+	NotificationType string `json:"notification_type"`
+}
+
+// SubagentStartHookInput is the input for SubagentStart hook callbacks.
+type SubagentStartHookInput struct {
+	hookInputBase
+	AgentID   string `json:"agent_id"`
+	AgentType string `json:"agent_type"`
+}
+
+// PermissionRequestHookInput is the input for PermissionRequest hook
+// callbacks.
+type PermissionRequestHookInput struct {
+	hookInputBase
+	hookInputAgent
+	ToolName              string         `json:"tool_name"`
+	ToolInput             map[string]any `json:"tool_input"`
+	PermissionSuggestions []any          `json:"permission_suggestions,omitempty"`
+}
+
+// DecodeHookInput unmarshals a hook callback's raw input map into a typed
+// hook-input struct (e.g. PreToolUseHookInput), for callbacks that want a
+// typed view instead of working with the raw map directly.
+func DecodeHookInput[T any](input map[string]any) (T, error) {
+	var out T
+	b, err := json.Marshal(input)
+	if err != nil {
+		return out, fmt.Errorf("claudecode: encode hook input: %w", err)
+	}
+	if err := json.Unmarshal(b, &out); err != nil {
+		return out, fmt.Errorf("claudecode: decode hook input: %w", err)
+	}
+	return out, nil
+}
