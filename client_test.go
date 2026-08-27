@@ -204,8 +204,10 @@ func TestClient_CloseForceKillsHungProcess(t *testing.T) {
 		}
 	}()
 
-	if err := c.Close(); err != nil {
-		t.Fatalf("Close() error = %v", err)
+	// The fake CLI ignores stdin-EOF but not SIGTERM, so it dies at close's
+	// stage 2 and Wait reports the signal -- expected, not a clean exit.
+	if err := c.Close(); err == nil {
+		t.Fatal("Close() error = nil, want the SIGTERM wait error")
 	}
 
 	if c.tr.cmd.ProcessState == nil {
@@ -237,8 +239,8 @@ func TestClient_CloseIsIdempotent(t *testing.T) {
 		}
 	}()
 
-	if err := c.Close(); err != nil {
-		t.Fatalf("first Close() error = %v", err)
+	if err := c.Close(); err == nil {
+		t.Fatal("first Close() error = nil, want the SIGTERM wait error")
 	}
 
 	if err := c.Close(); err != nil {

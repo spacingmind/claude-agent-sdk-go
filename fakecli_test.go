@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -46,6 +48,21 @@ func fakeCLIOptions(t *testing.T, scenario string) []Option {
 }
 
 func runFakeCLI() {
+	// The version probe spawns `<cli> -v`; answer from the test-set
+	// CLAUDECODE_FAKE_VERSION env var ("hang" simulates a stuck -v).
+	if len(os.Args) > 1 && os.Args[1] == "-v" {
+		v := os.Getenv("CLAUDECODE_FAKE_VERSION")
+		switch v {
+		case "hang":
+			time.Sleep(time.Hour)
+		case "":
+			fmt.Println("2.1.0")
+		default:
+			fmt.Println(v)
+		}
+		os.Exit(0)
+	}
+
 	scenario := os.Getenv("CLAUDECODE_FAKE_SCENARIO")
 
 	stdin := bufio.NewScanner(os.Stdin)
@@ -886,6 +903,27 @@ func runFakeCLI() {
 			"errors":      []string{"err-one", "err-two"},
 		})
 		os.Exit(0)
+
+	case "sigterm_exit":
+		// Acknowledge initialize, discard stdin until EOF, then exit
+		// cleanly (status 0) when SIGTERM arrives -- for the close
+		// escalation's stage-2 test.
+		ackInitialize()
+		sc := make(chan os.Signal, 1)
+		signal.Notify(sc, syscall.SIGTERM)
+		go func() {
+			for stdin.Scan() {
+			}
+		}()
+		<-sc
+		os.Exit(0)
+
+	case "ignore_signals":
+		// Acknowledge initialize, then ignore both stdin EOF and SIGTERM
+		// -- only SIGKILL can end this process (stage-3 test).
+		ackInitialize()
+		signal.Ignore(syscall.SIGTERM)
+		time.Sleep(time.Hour)
 
 	case "exit_immediately":
 		// Exit before acknowledging initialize: the initialize handshake

@@ -208,8 +208,10 @@ func TestClient_CloseDuringPromptUnblocks(t *testing.T) {
 		}
 	}()
 
-	if err := c.Close(); err != nil {
-		t.Fatalf("Close() error = %v", err)
+	// Fake "hang" CLI dies at the SIGTERM stage; the wait error (signal)
+	// is reported -- expected here.
+	if err := c.Close(); err == nil {
+		t.Fatal("Close() error = nil, want the SIGTERM wait error")
 	}
 
 	select {

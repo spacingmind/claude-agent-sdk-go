@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -213,10 +214,12 @@ func (t *transport) writeLine(v any) error {
 }
 
 // close closes stdin (so a well-behaved CLI can flush and exit on its own),
-// waits up to gracePeriod for it to do so, and force-kills it otherwise. An
-// error from Wait after a forced kill is expected (the process died by
-// signal, not by choice) and is not reported; an error from a CLI that
-// exited badly on its own within the grace period is reported.
+// then escalates: wait up to gracePeriod for a natural exit, SIGTERM and
+// wait another gracePeriod, and finally SIGKILL -- a total worst case of
+// roughly 3x gracePeriod. An error from Wait after a forced SIGKILL is
+// expected (the process died by signal, not by choice) and is not reported;
+// an error from a CLI that exited on its own (naturally or on SIGTERM)
+// within a grace period is reported.
 func (t *transport) close(gracePeriod time.Duration) error {
 	var closeErr error
 
@@ -224,14 +227,27 @@ func (t *transport) close(gracePeriod time.Duration) error {
 		close(t.closed)
 		_ = t.stdin.Close()
 
+		// Stage 1: natural exit on stdin EOF.
 		select {
 		case <-t.waitDone:
 			closeErr = t.waitErr
+			return
 		case <-time.After(gracePeriod):
-			_ = t.cmd.Process.Kill()
-
-			<-t.waitDone
 		}
+
+		// Stage 2: SIGTERM.
+		_ = t.cmd.Process.Signal(syscall.SIGTERM)
+		select {
+		case <-t.waitDone:
+			closeErr = t.waitErr
+			return
+		case <-time.After(gracePeriod):
+		}
+
+		// Stage 3: SIGKILL. An error from Wait after a forced kill is
+		// expected and suppressed (see the doc comment).
+		_ = t.cmd.Process.Kill()
+		<-t.waitDone
 	})
 
 	return closeErr
