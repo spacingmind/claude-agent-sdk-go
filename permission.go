@@ -38,6 +38,8 @@ type PermissionPolicy interface {
 // the pipeline end to end without a human in the loop.
 type AutoApprovePolicy struct{}
 
+// Decide implements PermissionPolicy: always allow, passing the request input
+// through unchanged.
 func (AutoApprovePolicy) Decide(_ context.Context, req CanUseToolRequest) (bool, map[string]any, string, []map[string]any, bool, error) {
 	return true, req.Input, "", nil, false, nil
 }
@@ -47,6 +49,7 @@ func (AutoApprovePolicy) Decide(_ context.Context, req CanUseToolRequest) (bool,
 // New uses when the caller doesn't supply a policy.
 type AutoDenyPolicy struct{}
 
+// Decide implements PermissionPolicy: always deny with a fixed message.
 func (AutoDenyPolicy) Decide(_ context.Context, _ CanUseToolRequest) (bool, map[string]any, string, []map[string]any, bool, error) {
 	return false, nil, "denied: no permission UI is wired up yet", nil, false, nil
 }
@@ -54,6 +57,7 @@ func (AutoDenyPolicy) Decide(_ context.Context, _ CanUseToolRequest) (bool, map[
 // HookEvent names a point in the CLI's lifecycle where hook callbacks fire.
 type HookEvent string
 
+// Hook events, matching the CLI's hook event names.
 const (
 	HookEventPreToolUse         HookEvent = "PreToolUse"
 	HookEventPostToolUse        HookEvent = "PostToolUse"
@@ -202,12 +206,15 @@ type PermissionRequestHookInput struct {
 // typed view instead of working with the raw map directly.
 func DecodeHookInput[T any](input map[string]any) (T, error) {
 	var out T
+
 	b, err := json.Marshal(input)
 	if err != nil {
 		return out, fmt.Errorf("claudecode: encode hook input: %w", err)
 	}
+
 	if err := json.Unmarshal(b, &out); err != nil {
 		return out, fmt.Errorf("claudecode: decode hook input: %w", err)
 	}
+
 	return out, nil
 }

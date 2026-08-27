@@ -16,14 +16,17 @@ import (
 // wholesale, so the scenario var must be set here too).
 func fakeCLIEnvOpts(t *testing.T, scenario string, extra ...string) []Option {
 	t.Helper()
+
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatalf("os.Executable() error = %v", err)
 	}
+
 	env := append(os.Environ(),
 		"CLAUDECODE_FAKE_CLI=1",
 		"CLAUDECODE_FAKE_SCENARIO="+scenario,
 	)
+
 	return []Option{WithCLIPath(self), withExtraEnv(append(env, extra...))}
 }
 
@@ -39,12 +42,14 @@ func (p *scriptablePolicy) Decide(ctx context.Context, req CanUseToolRequest) (b
 	p.mu.Lock()
 	p.got = append(p.got, req)
 	p.mu.Unlock()
+
 	return p.decide(ctx, req)
 }
 
 func (p *scriptablePolicy) requests() []CanUseToolRequest {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
 	return append([]CanUseToolRequest(nil), p.got...)
 }
 
@@ -64,29 +69,36 @@ func TestClient_SequentialPromptsReuseSubprocess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	for turn := 1; turn <= 2; turn++ {
 		updates := make(chan Message)
 		drained := make(chan struct{})
+
 		go func() {
-			for range updates {
+			for msg := range updates {
+				_ = msg // drain to unblock Prompt's forwarding goroutine
 			}
+
 			close(drained)
 		}()
+
 		res, err := c.Prompt(context.Background(), "go", updates)
 		if err != nil {
 			t.Fatalf("Prompt() turn %d error = %v", turn, err)
 		}
+
 		select {
 		case <-drained:
 		case <-time.After(5 * time.Second):
 			t.Fatalf("turn %d: updates not drained", turn)
 		}
+
 		want := "done-1"
 		if turn == 2 {
 			want = "done-2"
 		}
+
 		if res.Result != want {
 			t.Fatalf("Prompt() turn %d result = %q, want %q", turn, res.Result, want)
 		}
@@ -104,10 +116,11 @@ func TestClient_InterruptMidTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	updates := make(chan Message)
 	resultCh := make(chan promptResult, 1)
+
 	go func() {
 		res, err := c.Prompt(context.Background(), "go", updates)
 		resultCh <- promptResult{res, err}
@@ -118,6 +131,7 @@ func TestClient_InterruptMidTurn(t *testing.T) {
 		if !ok {
 			t.Fatal("updates closed before first message")
 		}
+
 		if _, isAssistant := msg.(AssistantMessage); !isAssistant {
 			t.Fatalf("update = %#v, want AssistantMessage", msg)
 		}
@@ -134,6 +148,7 @@ func TestClient_InterruptMidTurn(t *testing.T) {
 		if r.err != nil {
 			t.Fatalf("Prompt() error = %v", r.err)
 		}
+
 		if r.res.Result != "interrupted" {
 			t.Fatalf("Prompt() result = %q, want %q", r.res.Result, "interrupted")
 		}
@@ -149,7 +164,7 @@ func TestClient_ConcurrentControlRequestsCorrelateOutOfOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	errCh := make(chan error, 2)
 	go func() { errCh <- c.SetPermissionMode(context.Background(), "acceptEdits") }()
@@ -158,7 +173,7 @@ func TestClient_ConcurrentControlRequestsCorrelateOutOfOrder(t *testing.T) {
 		errCh <- c.SetModel(context.Background(), &m)
 	}()
 
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		select {
 		case err := <-errCh:
 			if err != nil {
@@ -174,6 +189,7 @@ func TestClient_CloseDuringPromptUnblocks(t *testing.T) {
 	t.Parallel()
 
 	opts := append(fakeCLIOptions(t, "hang"), withCloseGracePeriod(200*time.Millisecond))
+
 	c, err := New(t.TempDir(), opts...)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -181,12 +197,14 @@ func TestClient_CloseDuringPromptUnblocks(t *testing.T) {
 
 	updates := make(chan Message)
 	promptDone := make(chan error, 1)
+
 	go func() {
 		_, err := c.Prompt(context.Background(), "hi", updates)
 		promptDone <- err
 	}()
 	go func() {
-		for range updates {
+		for msg := range updates {
+			_ = msg // drain to unblock Prompt's forwarding goroutine
 		}
 	}()
 
@@ -215,7 +233,7 @@ func TestClient_UnknownControlResponseIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if err := c.Interrupt(context.Background()); err != nil {
 		t.Fatalf("Interrupt() after stray control_response error = %v", err)
@@ -229,23 +247,25 @@ func TestClient_CrashForceResolvesPendingRequests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	updates := make(chan Message)
 	promptDone := make(chan error, 1)
+
 	go func() {
 		_, err := c.Prompt(context.Background(), "hi", updates)
 		promptDone <- err
 	}()
 	go func() {
-		for range updates {
+		for msg := range updates {
+			_ = msg // drain to unblock Prompt's forwarding goroutine
 		}
 	}()
 
 	ctrlDone := make(chan error, 1)
 	go func() { ctrlDone <- c.SetPermissionMode(context.Background(), "acceptEdits") }()
 
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		select {
 		case err := <-promptDone:
 			if err == nil {
@@ -265,43 +285,55 @@ func TestClient_OutboundControlWireShapes(t *testing.T) {
 	t.Parallel()
 
 	const numRequests = 10
+
 	opts := fakeCLIEnvOpts(t, "capture_stdin",
 		"CLAUDECODE_FAKE_MAX_LINES="+strconv.Itoa(numRequests))
+
 	c, err := New(t.TempDir(), opts...)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	sonnet := "sonnet"
+
 	if err := c.Interrupt(ctx); err != nil {
 		t.Fatalf("Interrupt() error = %v", err)
 	}
+
 	if err := c.SetPermissionMode(ctx, "acceptEdits"); err != nil {
 		t.Fatalf("SetPermissionMode() error = %v", err)
 	}
+
 	if err := c.SetModel(ctx, &sonnet); err != nil {
 		t.Fatalf("SetModel(string) error = %v", err)
 	}
+
 	if err := c.SetModel(ctx, nil); err != nil {
 		t.Fatalf("SetModel(nil) error = %v", err)
 	}
+
 	if err := c.RewindFiles(ctx, "msg-1"); err != nil {
 		t.Fatalf("RewindFiles() error = %v", err)
 	}
+
 	if _, err := c.GetMCPStatus(ctx); err != nil {
 		t.Fatalf("GetMCPStatus() error = %v", err)
 	}
+
 	if _, err := c.GetContextUsage(ctx); err != nil {
 		t.Fatalf("GetContextUsage() error = %v", err)
 	}
+
 	if err := c.ReconnectMCPServer(ctx, "srv"); err != nil {
 		t.Fatalf("ReconnectMCPServer() error = %v", err)
 	}
+
 	if err := c.ToggleMCPServer(ctx, "srv", false); err != nil {
 		t.Fatalf("ToggleMCPServer() error = %v", err)
 	}
+
 	if err := c.StopTask(ctx, "task-1"); err != nil {
 		t.Fatalf("StopTask() error = %v", err)
 	}
@@ -309,14 +341,17 @@ func TestClient_OutboundControlWireShapes(t *testing.T) {
 	// The fake CLI reports the recorded stdin lines via the result message
 	// once it has answered all numRequests control requests.
 	var captured []string
+
 	for msg := range c.ReceiveResponse(ctx) {
 		if res, ok := msg.(ResultMessage); ok {
 			if err := json.Unmarshal([]byte(res.Result), &captured); err != nil {
 				t.Fatalf("unmarshal captured stdin: %v", err)
 			}
+
 			break
 		}
 	}
+
 	if len(captured) != numRequests {
 		t.Fatalf("captured %d stdin lines, want %d: %q", len(captured), numRequests, captured)
 	}
@@ -327,6 +362,7 @@ func TestClient_OutboundControlWireShapes(t *testing.T) {
 		"mcp_toggle", "stop_task",
 	}
 	seenIDs := map[string]bool{}
+
 	for i, line := range captured {
 		var env struct {
 			Type      string         `json:"type"`
@@ -336,12 +372,15 @@ func TestClient_OutboundControlWireShapes(t *testing.T) {
 		if err := json.Unmarshal([]byte(line), &env); err != nil {
 			t.Fatalf("line %d not valid JSON: %q", i, line)
 		}
+
 		if env.Type != "control_request" {
 			t.Fatalf("line %d type = %q, want control_request", i, env.Type)
 		}
+
 		if env.RequestID == "" || seenIDs[env.RequestID] {
 			t.Fatalf("line %d request_id %q missing or duplicated", i, env.RequestID)
 		}
+
 		seenIDs[env.RequestID] = true
 
 		sub, _ := env.Request["subtype"].(string)
@@ -350,6 +389,7 @@ func TestClient_OutboundControlWireShapes(t *testing.T) {
 		}
 
 		var want map[string]any
+
 		switch wantSubtypes[i] {
 		case "set_permission_mode":
 			want = map[string]any{"mode": "acceptEdits"}
@@ -362,6 +402,7 @@ func TestClient_OutboundControlWireShapes(t *testing.T) {
 		case "stop_task":
 			want = map[string]any{"task_id": "task-1"}
 		}
+
 		for k, v := range want {
 			got, ok := env.Request[k]
 			if !ok || got != v {
@@ -379,12 +420,15 @@ func TestClient_OutboundControlWireShapes(t *testing.T) {
 	if err := json.Unmarshal([]byte(captured[2]), &withModel); err != nil {
 		t.Fatalf("unmarshal set_model line: %v", err)
 	}
+
 	if withModel.Request.Model == nil || *withModel.Request.Model != "sonnet" {
 		t.Fatalf("set_model line model = %#v, want sonnet", withModel.Request.Model)
 	}
+
 	if err := json.Unmarshal([]byte(captured[3]), &withModel); err != nil {
 		t.Fatalf("unmarshal set_model(nil) line: %v", err)
 	}
+
 	if withModel.Request.Model != nil {
 		t.Fatalf("set_model(nil) line model = %#v, want JSON null", withModel.Request.Model)
 	}
@@ -395,11 +439,12 @@ func TestClient_OutboundControlErrorResponse(t *testing.T) {
 
 	opts := fakeCLIEnvOpts(t, "control_echo",
 		`CLAUDECODE_FAKE_RESPONSES={"set_permission_mode":{"__error":"mode rejected"}}`)
+
 	c, err := New(t.TempDir(), opts...)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	err = c.SetPermissionMode(context.Background(), "nope")
 	if err == nil || !strings.Contains(err.Error(), "mode rejected") {
@@ -413,11 +458,13 @@ func TestClient_OutboundControlTimeout(t *testing.T) {
 	opts := fakeCLIEnvOpts(t, "control_echo",
 		"CLAUDECODE_FAKE_RESPONSES={}",
 		"CLAUDECODE_FAKE_IGNORE=interrupt")
+
 	c, err := New(t.TempDir(), opts...)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
+
 	c.controlTimeout = 200 * time.Millisecond
 
 	if err := c.Interrupt(context.Background()); err == nil {
@@ -427,6 +474,7 @@ func TestClient_OutboundControlTimeout(t *testing.T) {
 	c.pendingMu.Lock()
 	left := len(c.pending)
 	c.pendingMu.Unlock()
+
 	if left != 0 {
 		t.Fatalf("pending map holds %d entries after timeout, want 0", left)
 	}
@@ -440,17 +488,20 @@ func TestClient_MCPStatusAndContextUsageParse(t *testing.T) {
 		`"get_context_usage":{"categories":[{"name":"tools","tokens":10,"color":"blue"}],` +
 		`"totalTokens":100,"maxTokens":200,"percentage":50,"model":"m","memoryFiles":3}}`
 	opts := fakeCLIEnvOpts(t, "control_echo", "CLAUDECODE_FAKE_RESPONSES="+responses)
+
 	c, err := New(t.TempDir(), opts...)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
+
 	status, err := c.GetMCPStatus(ctx)
 	if err != nil {
 		t.Fatalf("GetMCPStatus() error = %v", err)
 	}
+
 	if len(status.MCPServers) != 1 || status.MCPServers[0].Name != "srv" ||
 		status.MCPServers[0].ServerInfo == nil || status.MCPServers[0].ServerInfo.Version != "1" ||
 		len(status.MCPServers[0].Tools) != 1 || status.MCPServers[0].Tools[0].Name != "t" {
@@ -461,10 +512,12 @@ func TestClient_MCPStatusAndContextUsageParse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetContextUsage() error = %v", err)
 	}
+
 	if usage.TotalTokens != 100 || usage.MaxTokens != 200 || usage.Percentage != 50 ||
 		usage.Model != "m" || len(usage.Categories) != 1 || usage.Categories[0].Tokens != 10 {
 		t.Fatalf("GetContextUsage() typed fields = %#v", usage)
 	}
+
 	if !strings.Contains(string(usage.Raw), `"memoryFiles":3`) {
 		t.Fatalf("GetContextUsage().Raw missing unmodeled fields: %s", usage.Raw)
 	}
@@ -488,9 +541,10 @@ func TestClient_CanUseToolRoundTripFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	updates := make(chan Message)
+
 	res, err := c.Prompt(context.Background(), "go", updates)
 	if err != nil {
 		t.Fatalf("Prompt() error = %v", err)
@@ -500,6 +554,7 @@ func TestClient_CanUseToolRoundTripFields(t *testing.T) {
 	if err := json.Unmarshal([]byte(res.Result), &resps); err != nil {
 		t.Fatalf("unmarshal responses: %v", err)
 	}
+
 	if len(resps) != 3 {
 		t.Fatalf("got %d control responses, want 3", len(resps))
 	}
@@ -509,6 +564,7 @@ func TestClient_CanUseToolRoundTripFields(t *testing.T) {
 	if len(reqs) != 3 {
 		t.Fatalf("policy saw %d requests, want 3", len(reqs))
 	}
+
 	first := reqs[0]
 	if first.Title != "t" || first.DisplayName != "dn" || first.Description != "d" ||
 		first.DecisionReason != "dr" || first.BlockedPath != "/tmp/x" || first.AgentID != "agent-1" {
@@ -517,15 +573,18 @@ func TestClient_CanUseToolRoundTripFields(t *testing.T) {
 
 	assertResponse := func(i int, wantKeys map[string]any, absentKeys ...string) {
 		t.Helper()
+
 		inner, _ := resps[i]["response"].(map[string]any)
 		if inner == nil {
 			t.Fatalf("response %d has no response object: %#v", i, resps[i])
 		}
+
 		for k, v := range wantKeys {
 			if inner[k] != v {
 				t.Fatalf("response %d [%q] = %#v, want %#v", i, k, inner[k], v)
 			}
 		}
+
 		for _, k := range absentKeys {
 			if _, present := inner[k]; present {
 				t.Fatalf("response %d unexpectedly contains %q: %#v", i, k, inner)
@@ -539,10 +598,12 @@ func TestClient_CanUseToolRoundTripFields(t *testing.T) {
 
 	// updatedPermissions only on response 0; interrupt only on the deny.
 	inner0, _ := resps[0]["response"].(map[string]any)
+
 	perms, ok := inner0["updatedPermissions"].([]any)
 	if !ok || len(perms) != 1 {
 		t.Fatalf("response 0 updatedPermissions = %#v, want one entry", inner0["updatedPermissions"])
 	}
+
 	inner2, _ := resps[2]["response"].(map[string]any)
 	if inner2["interrupt"] != true {
 		t.Fatalf("response 2 interrupt = %#v, want true", inner2["interrupt"])
@@ -553,12 +614,14 @@ func TestClient_HookCallbackDispatch(t *testing.T) {
 	t.Parallel()
 
 	const hookID = "hook_test_1"
+
 	opts := fakeCLIEnvOpts(t, "hook_dispatch", "CLAUDECODE_FAKE_HOOK_ID="+hookID)
+
 	c, err := New(t.TempDir(), append(opts, WithPermissionPolicy(blockingPolicy{}))...)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	c.hookMu.Lock()
 	c.hookCallbacks[hookID] = func(_ context.Context, input map[string]any, toolUseID string) (*HookJSONOutput, error) {
@@ -570,6 +633,7 @@ func TestClient_HookCallbackDispatch(t *testing.T) {
 	c.hookMu.Unlock()
 
 	updates := make(chan Message)
+
 	res, err := c.Prompt(context.Background(), "go", updates)
 	if err != nil {
 		t.Fatalf("Prompt() error = %v", err)
@@ -609,9 +673,10 @@ func TestClient_InboundControlEdgeCases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	updates := make(chan Message)
+
 	res, err := c.Prompt(context.Background(), "go", updates)
 	if err != nil {
 		t.Fatalf("Prompt() error = %v", err)
@@ -646,8 +711,11 @@ func TestClient_InboundControlEdgeCases(t *testing.T) {
 func TestClient_HooksRegisteredAndRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	var gotInput map[string]any
-	var gotToolUseID string
+	var (
+		gotInput     map[string]any
+		gotToolUseID string
+	)
+
 	c, err := New(t.TempDir(), append(fakeCLIOptions(t, "hooks_roundtrip"),
 		WithHooks(map[HookEvent][]HookMatcher{
 			HookEventPreToolUse: {{
@@ -655,6 +723,7 @@ func TestClient_HooksRegisteredAndRoundTrip(t *testing.T) {
 				Hooks: []HookCallback{func(_ context.Context, input map[string]any, toolUseID string) (*HookJSONOutput, error) {
 					gotInput, gotToolUseID = input, toolUseID
 					cont := false
+
 					return &HookJSONOutput{
 						Continue:           &cont,
 						Decision:           "approve",
@@ -667,9 +736,10 @@ func TestClient_HooksRegisteredAndRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	updates := make(chan Message)
+
 	res, err := c.Prompt(context.Background(), "go", updates)
 	if err != nil {
 		t.Fatalf("Prompt() error = %v", err)
@@ -689,12 +759,15 @@ func TestClient_HooksRegisteredAndRoundTrip(t *testing.T) {
 	if len(matchers) != 1 {
 		t.Fatalf("initialize hooks for PreToolUse = %#v, want one matcher entry", matchers)
 	}
+
 	if matchers[0]["matcher"] != "Bash" {
 		t.Fatalf("matcher = %#v, want Bash", matchers[0]["matcher"])
 	}
+
 	if matchers[0]["timeout"] != float64(30) {
 		t.Fatalf("timeout = %#v, want 30", matchers[0]["timeout"])
 	}
+
 	ids, _ := matchers[0]["hookCallbackIds"].([]any)
 	if len(ids) != 1 || ids[0] != "hook_0" {
 		t.Fatalf("hookCallbackIds = %#v, want [hook_0]", matchers[0]["hookCallbackIds"])
@@ -706,10 +779,12 @@ func TestClient_HooksRegisteredAndRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeHookInput: %v", err)
 	}
+
 	if in.HookEventName != "PreToolUse" || in.ToolName != "Bash" ||
 		in.SessionID != "sess-1" || in.ToolInput["command"] != "ls" {
 		t.Fatalf("decoded hook input = %#v, want PreToolUseHookInput fields", in)
 	}
+
 	if gotToolUseID != "tool-1" {
 		t.Fatalf("toolUseID = %q, want tool-1", gotToolUseID)
 	}
@@ -718,16 +793,20 @@ func TestClient_HooksRegisteredAndRoundTrip(t *testing.T) {
 	if hookResp == nil {
 		t.Fatalf("hook response missing response_data: %#v", out.Hook)
 	}
+
 	if cont, _ := hookResp["continue"].(bool); cont {
 		t.Fatalf("continue = %#v, want false", hookResp["continue"])
 	}
+
 	if hookResp["decision"] != "approve" {
 		t.Fatalf("decision = %#v, want approve", hookResp["decision"])
 	}
+
 	hso, _ := hookResp["hookSpecificOutput"].(map[string]any)
 	if hso == nil || hso["permissionDecision"] != "allow" {
 		t.Fatalf("hookSpecificOutput = %#v, want permissionDecision allow", hookResp["hookSpecificOutput"])
 	}
+
 	if up, _ := hso["updatedInput"].(map[string]any); up == nil || up["command"] != "true" {
 		t.Fatalf("hookSpecificOutput.updatedInput = %#v, want command true", hso["updatedInput"])
 	}
@@ -741,15 +820,19 @@ func TestClient_HooksSameEventDispatchedConcurrently(t *testing.T) {
 	newCB := func(id string) HookCallback {
 		return func(ctx context.Context, _ map[string]any, _ string) (*HookJSONOutput, error) {
 			entered <- id
+
 			select {
 			case <-release:
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			}
+
 			out := &HookJSONOutput{Decision: "done-" + id}
+
 			return out, nil
 		}
 	}
+
 	c, err := New(t.TempDir(), append(fakeCLIOptions(t, "hooks_concurrent"),
 		WithHooks(map[HookEvent][]HookMatcher{
 			HookEventPostToolUse: {
@@ -760,16 +843,18 @@ func TestClient_HooksSameEventDispatchedConcurrently(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	updates := make(chan Message)
 	promptDone := make(chan promptResult, 1)
+
 	go func() {
 		res, err := c.Prompt(context.Background(), "go", updates)
 		promptDone <- promptResult{res, err}
 	}()
 	go func() {
-		for range updates {
+		for msg := range updates {
+			_ = msg // drain to unblock Prompt's forwarding goroutine
 		}
 	}()
 
@@ -777,7 +862,8 @@ func TestClient_HooksSameEventDispatchedConcurrently(t *testing.T) {
 	// both report entry (or the test times out, which is exactly the
 	// failure mode serialized dispatch would produce).
 	seen := map[string]bool{}
-	for i := 0; i < 2; i++ {
+
+	for i := range 2 {
 		select {
 		case id := <-entered:
 			seen[id] = true
@@ -785,6 +871,7 @@ func TestClient_HooksSameEventDispatchedConcurrently(t *testing.T) {
 			t.Fatalf("only %d hook callbacks entered after 5s (seen %v), want 2 concurrently", i+1, seen)
 		}
 	}
+
 	close(release)
 
 	select {
@@ -792,25 +879,31 @@ func TestClient_HooksSameEventDispatchedConcurrently(t *testing.T) {
 		if r.err != nil {
 			t.Fatalf("Prompt() error = %v", r.err)
 		}
+
 		var out struct {
 			Responses []map[string]any `json:"responses"`
 		}
 		if err := json.Unmarshal([]byte(r.res.Result), &out); err != nil {
 			t.Fatalf("unmarshal result: %v", err)
 		}
+
 		if len(out.Responses) != 2 {
 			t.Fatalf("got %d hook responses, want 2", len(out.Responses))
 		}
+
 		decisions := map[string]bool{}
+
 		for _, r := range out.Responses {
 			inner, _ := r["response"].(map[string]any)
 			if inner == nil {
 				t.Fatalf("hook response missing response_data: %#v", r)
 			}
+
 			if d, _ := inner["decision"].(string); d != "" {
 				decisions[d] = true
 			}
 		}
+
 		if !decisions["done-a"] || !decisions["done-b"] {
 			t.Fatalf("hook response decisions = %v, want both done-a and done-b", decisions)
 		}

@@ -4,8 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"sort"
 	"sync"
+)
+
+// JSON-RPC wire literals for the SDK MCP bridge's responses.
+const (
+	jsonrpcVersion  = "2.0"
+	jsonrpcKey      = "jsonrpc"
+	jsonrpcResult   = "result"
+	contentTypeText = "text"
+	typeKey         = "type"
 )
 
 // McpContent is one content block of a tool result: text
@@ -72,6 +82,7 @@ func NewMcpTool(name, description string, inputSchema map[string]any, handler Mc
 	for _, opt := range opts {
 		opt(t)
 	}
+
 	return t
 }
 
@@ -99,6 +110,7 @@ func NewSdkMcpServer(name, version string, tools ...*McpTool) *SdkMcpServer {
 			s.tools[t.name] = t
 		}
 	}
+
 	return s
 }
 
@@ -112,11 +124,13 @@ func (s *SdkMcpServer) listTools() []map[string]any {
 	for name := range s.tools {
 		names = append(names, name)
 	}
+
 	sort.Strings(names)
 
 	out := make([]map[string]any, 0, len(names))
 	for _, name := range names {
 		t := s.tools[name]
+
 		entry := map[string]any{
 			"name":        t.name,
 			"description": t.description,
@@ -133,8 +147,10 @@ func (s *SdkMcpServer) listTools() []map[string]any {
 				}
 			}
 		}
+
 		out = append(out, entry)
 	}
+
 	return out
 }
 
@@ -147,18 +163,22 @@ func (s *SdkMcpServer) callTool(ctx context.Context, name string, args map[strin
 	s.mu.RLock()
 	tool := s.tools[name]
 	s.mu.RUnlock()
+
 	if tool == nil {
 		return nil, fmt.Errorf("tool %q not found", name)
 	}
+
 	if args == nil {
 		args = map[string]any{}
 	}
+
 	return func() (r *McpToolResult, e error) {
 		defer func() {
 			if p := recover(); p != nil {
 				e = fmt.Errorf("tool %q panicked: %v", name, p)
 			}
 		}()
+
 		return tool.handler(ctx, args)
 	}()
 }
@@ -179,9 +199,9 @@ func (c *Client) dispatchMcpMessage(ctx context.Context, serverName string, msg 
 	switch method {
 	case "initialize":
 		return map[string]any{
-			"jsonrpc": "2.0",
-			"id":      id,
-			"result": map[string]any{
+			jsonrpcKey: jsonrpcVersion,
+			"id":       id,
+			jsonrpcResult: map[string]any{
 				"protocolVersion": "2024-11-05",
 				"capabilities":    map[string]any{"tools": map[string]any{}},
 				"serverInfo":      map[string]any{"name": server.name, "version": server.version},
@@ -190,9 +210,9 @@ func (c *Client) dispatchMcpMessage(ctx context.Context, serverName string, msg 
 
 	case "tools/list":
 		return map[string]any{
-			"jsonrpc": "2.0",
-			"id":      id,
-			"result":  map[string]any{"tools": server.listTools()},
+			jsonrpcKey:    jsonrpcVersion,
+			"id":          id,
+			jsonrpcResult: map[string]any{"tools": server.listTools()},
 		}
 
 	case "tools/call":
@@ -203,10 +223,10 @@ func (c *Client) dispatchMcpMessage(ctx context.Context, serverName string, msg 
 		result, err := server.callTool(ctx, toolName, args)
 		if err != nil {
 			return map[string]any{
-				"jsonrpc": "2.0",
-				"id":      id,
-				"result": map[string]any{
-					"content": []map[string]any{{"type": "text", "text": err.Error()}},
+				jsonrpcKey: jsonrpcVersion,
+				"id":       id,
+				jsonrpcResult: map[string]any{
+					"content": []map[string]any{{typeKey: contentTypeText, "text": err.Error()}},
 					"isError": true,
 				},
 			}
@@ -216,27 +236,29 @@ func (c *Client) dispatchMcpMessage(ctx context.Context, serverName string, msg 
 		for _, mc := range result.Content {
 			if mc.Type == "image" {
 				content = append(content, map[string]any{
-					"type":     "image",
+					typeKey:    "image",
 					"data":     mc.Data,
 					"mimeType": mc.MimeType,
 				})
 			} else {
 				content = append(content, map[string]any{
-					"type": "text",
-					"text": mc.Text,
+					typeKey: contentTypeText,
+					"text":  mc.Text,
 				})
 			}
 		}
+
 		res := map[string]any{"content": content}
 		if result.IsError {
 			res["isError"] = true
 		}
-		return map[string]any{"jsonrpc": "2.0", "id": id, "result": res}
+
+		return map[string]any{jsonrpcKey: jsonrpcVersion, "id": id, jsonrpcResult: res}
 
 	case "notifications/initialized":
 		// A notification: no "id" key, but the outer control_request still
 		// gets its success ack.
-		return map[string]any{"jsonrpc": "2.0", "result": map[string]any{}}
+		return map[string]any{jsonrpcKey: jsonrpcVersion, jsonrpcResult: map[string]any{}}
 
 	default:
 		return jsonrpcErrorPayload(id, -32601, fmt.Sprintf("method %q not found", method))
@@ -245,9 +267,9 @@ func (c *Client) dispatchMcpMessage(ctx context.Context, serverName string, msg 
 
 func jsonrpcErrorPayload(id any, code int, message string) map[string]any {
 	return map[string]any{
-		"jsonrpc": "2.0",
-		"id":      id,
-		"error":   map[string]any{"code": code, "message": message},
+		jsonrpcKey: jsonrpcVersion,
+		"id":       id,
+		"error":    map[string]any{"code": code, "message": message},
 	}
 }
 
@@ -264,6 +286,7 @@ func resolveMCPConfig(o *options) (string, error) {
 	}
 
 	merged := map[string]any{}
+
 	if o.mcpConfig != "" {
 		var parsed struct {
 			McpServers map[string]any `json:"mcpServers"`
@@ -271,10 +294,10 @@ func resolveMCPConfig(o *options) (string, error) {
 		if err := json.Unmarshal([]byte(o.mcpConfig), &parsed); err != nil {
 			return "", fmt.Errorf("claudecode: WithMCPConfig value is not inline JSON (a file path?) and cannot be merged with SDK MCP servers: %w", err)
 		}
-		for k, v := range parsed.McpServers {
-			merged[k] = v
-		}
+
+		maps.Copy(merged, parsed.McpServers)
 	}
+
 	for _, s := range o.sdkMcpServerList {
 		merged[s.name] = map[string]any{"type": "sdk", "name": s.name}
 	}
@@ -283,5 +306,6 @@ func resolveMCPConfig(o *options) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("claudecode: marshal merged mcp config: %w", err)
 	}
+
 	return string(out), nil
 }
