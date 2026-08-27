@@ -336,8 +336,23 @@ persistence (local resume, and — if ever needed — a pluggable
 
 ## Progress
 
-Not started — this document is the research + spec deliverable for this
-pass. No implementation has begun.
+- **Done** — Section D (CLI flag / options parity, AC 18-21): implemented on
+  `sdk-parity/cli-flags-options` (commit `654a0ae`), merged to `main`.
+  Table-driven tests in `flags_test.go` cover exact-argv assertions per
+  option, unset-produces-no-flag, extra-args passthrough, and env merge
+  (`CLAUDECODE` stripped, `CLAUDE_CODE_ENTRYPOINT` default + override,
+  inherited vars preserved).
+- **Done** — Section E (Message & content-block parity, AC 22-26):
+  implemented on `sdk-parity/message-content-blocks` (commit `788a98a`),
+  merged to `main`. Table-driven tests in `messages_test.go` cover all new
+  content blocks, top-level message types, system subtypes (including
+  `task_updated`'s defensive parsing), and `ResultMessage`'s new fields.
+- **Not started** — Section A (persistent client / concurrency model),
+  Section B (outbound control protocol), Section C (inbound control
+  protocol): next up, implemented together since the concurrency model *is*
+  the control-protocol machinery.
+- **Not started** — Section F (Hooks): depends on B/C (control protocol)
+  and D (options), planned after A/B/C.
 
 ## Validation
 
