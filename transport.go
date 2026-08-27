@@ -125,6 +125,7 @@ func startTransport(worktreePath, cliPath string, args, env []string, stderr io.
 		closed:   make(chan struct{}),
 		waitDone: make(chan struct{}),
 	}
+
 	t.exitCode.Store(-1)
 	go t.readLoop(stdout)
 	go t.wait()
@@ -140,8 +141,7 @@ func isNotFoundErr(err error) bool {
 		return true
 	}
 
-	var pathErr *os.PathError
-	if errors.As(err, &pathErr) {
+	if pathErr, ok := errors.AsType[*os.PathError](err); ok {
 		return errors.Is(pathErr.Err, os.ErrNotExist) || errors.Is(pathErr.Err, os.ErrPermission)
 	}
 
@@ -166,7 +166,7 @@ func (t *transport) wait() {
 	t.waitErr = t.cmd.Wait()
 
 	if t.cmd.ProcessState != nil {
-		t.exitCode.Store(int32(t.cmd.ProcessState.ExitCode()))
+		t.exitCode.Store(int32(t.cmd.ProcessState.ExitCode())) //nolint:gosec  // process exit codes fit in int32 on every supported OS; ExitCode() itself returns -1 for "not exited/no exit code"
 	}
 
 	close(t.waitDone)

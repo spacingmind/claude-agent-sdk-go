@@ -96,7 +96,7 @@ func checkCLIVersion(cliPath string, env []string, logWriter io.Writer) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, cliPath, "-v") //nolint:gosec  // cliPath resolved/validated at New time; bounded by ctx
+	cmd := exec.CommandContext(ctx, cliPath, "-v")
 	if env != nil {
 		cmd.Env = env
 	}
@@ -129,6 +129,7 @@ func compareVersions(a, b string) int {
 		if i < len(as) {
 			av, _ = strconv.Atoi(as[i])
 		}
+
 		if i < len(bs) {
 			bv, _ = strconv.Atoi(bs[i])
 		}

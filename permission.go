@@ -55,8 +55,10 @@ func (u PermissionUpdate) MarshalJSON() ([]byte, error) {
 			if r.RuleContent != "" {
 				rm["ruleContent"] = r.RuleContent
 			}
+
 			rules = append(rules, rm)
 		}
+
 		m["rules"] = rules
 		m["behavior"] = u.Behavior
 	case "setMode":

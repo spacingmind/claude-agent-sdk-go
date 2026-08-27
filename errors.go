@@ -65,7 +65,7 @@ type ResultError struct {
 }
 
 func (e *ResultError) Error() string {
-	return fmt.Sprintf("claudecode: CLI turn ended with an error result: %s", e.Text)
+	return "claudecode: CLI turn ended with an error result: " + e.Text
 }
 
 // CLIJSONDecodeError reports that a control-response payload failed to

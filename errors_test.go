@@ -17,8 +17,7 @@ func TestNew_CLINotFound(t *testing.T) {
 		t.Fatal("New() with nonexistent CLI path = nil error, want error")
 	}
 
-	var nfErr *CLINotFoundError
-	if !errors.As(err, &nfErr) {
+	if _, ok := errors.AsType[*CLINotFoundError](err); !ok {
 		t.Fatalf("New() error = %T (%v), want *CLINotFoundError", err, err)
 	}
 }
@@ -36,8 +35,7 @@ func TestNew_CLINotFoundNotExecutable(t *testing.T) {
 		t.Fatal("New() with non-executable CLI path = nil error, want error")
 	}
 
-	var nfErr *CLINotFoundError
-	if !errors.As(err, &nfErr) {
+	if _, ok := errors.AsType[*CLINotFoundError](err); !ok {
 		t.Fatalf("New() error = %T (%v), want *CLINotFoundError", err, err)
 	}
 }
@@ -50,8 +48,7 @@ func TestNew_ConnectionErrorOnFailedHandshake(t *testing.T) {
 		t.Fatal("New() with CLI exiting pre-handshake = nil error, want error")
 	}
 
-	var connErr *CLIConnectionError
-	if !errors.As(err, &connErr) {
+	if _, ok := errors.AsType[*CLIConnectionError](err); !ok {
 		t.Fatalf("New() error = %T (%v), want *CLIConnectionError", err, err)
 	}
 }
@@ -70,7 +67,7 @@ func TestClient_ErrNilAfterCleanClose(t *testing.T) {
 
 	// Wait for the stream to actually end so Err() reflects the final
 	// state, not just the close signal.
-	for range c.ReceiveMessages(context.Background()) {
+	for range c.ReceiveMessages(context.Background()) { //nolint:revive  // intentional drain until the stream closes, no per-message action needed
 	}
 
 	if err := c.Err(); err != nil {
@@ -91,12 +88,13 @@ func TestClient_ErrProcessErrorAfterCrash(t *testing.T) {
 	// readLoop is never blocked on a full c.msgs buffer.
 	updates := make(chan Message, 100)
 	promptDone := make(chan error, 1)
+
 	go func() {
 		_, err := c.Prompt(context.Background(), "hi", updates)
 		promptDone <- err
 	}()
 
-	for range c.ReceiveMessages(context.Background()) {
+	for range c.ReceiveMessages(context.Background()) { //nolint:revive  // intentional drain until the stream closes, no per-message action needed
 	}
 
 	select {
@@ -110,13 +108,11 @@ func TestClient_ErrProcessErrorAfterCrash(t *testing.T) {
 		t.Fatal("Err() after crash = nil, want error")
 	}
 
-	var procErr *ProcessError
-	if !errors.As(err, &procErr) {
+	if _, ok := errors.AsType[*ProcessError](err); !ok {
 		t.Fatalf("Err() after crash = %T (%v), want *ProcessError", err, err)
 	}
 
-	var resErr *ResultError
-	if errors.As(err, &resErr) {
+	if _, ok := errors.AsType[*ResultError](err); ok {
 		t.Fatalf("Err() after crash without error result = %T, ProcessError and ResultError must be mutually exclusive", err)
 	}
 }
@@ -132,12 +128,13 @@ func TestClient_ErrResultErrorAfterErroredResultThenCrash(t *testing.T) {
 
 	updates := make(chan Message, 100)
 	promptDone := make(chan error, 1)
+
 	go func() {
 		_, err := c.Prompt(context.Background(), "hi", updates)
 		promptDone <- err
 	}()
 
-	for range c.ReceiveMessages(context.Background()) {
+	for range c.ReceiveMessages(context.Background()) { //nolint:revive  // intentional drain until the stream closes, no per-message action needed
 	}
 
 	select {

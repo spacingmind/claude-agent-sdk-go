@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,12 +22,14 @@ type lockedBuffer struct {
 func (b *lockedBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
 	return b.buf.Write(p)
 }
 
 func (b *lockedBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
 	return b.buf.String()
 }
 
@@ -45,6 +48,7 @@ func withCLIStubHome(t *testing.T) string {
 			filepath.Join(home, ".local", "bin", "claude"),
 		}
 	}
+
 	t.Cleanup(func() { cliFallbackPaths = old })
 
 	return home
@@ -68,7 +72,6 @@ func writeStubCLI(t *testing.T, path string) {
 }
 
 func TestResolveCLIPath_FallbackDiscovery(t *testing.T) {
-
 	home := withCLIStubHome(t)
 	t.Setenv("PATH", "")
 
@@ -79,13 +82,13 @@ func TestResolveCLIPath_FallbackDiscovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveCLIPath() error = %v", err)
 	}
+
 	if got != stub {
 		t.Fatalf("resolveCLIPath() = %q, want %q", got, stub)
 	}
 }
 
 func TestResolveCLIPath_ExplicitPassthrough(t *testing.T) {
-
 	t.Setenv("PATH", "")
 
 	got, err := resolveCLIPath("/definitely/not/checked")
@@ -95,23 +98,28 @@ func TestResolveCLIPath_ExplicitPassthrough(t *testing.T) {
 }
 
 func TestResolveCLIPath_NotFoundActionable(t *testing.T) {
-
 	withCLIStubHome(t)
 	t.Setenv("PATH", "")
 
 	_, err := resolveCLIPath("")
+
 	var nf *CLINotFoundError
+
 	if err == nil {
 		t.Fatal("resolveCLIPath() succeeded, want error")
 	}
-	if e, ok := err.(*CLINotFoundError); ok {
+
+	e := &CLINotFoundError{}
+	if errors.As(err, &e) {
 		nf = e
 	} else {
 		t.Fatalf("error type = %T, want *CLINotFoundError", err)
 	}
+
 	if nf.Path != "claude" {
 		t.Fatalf("Path = %q, want %q", nf.Path, "claude")
 	}
+
 	msg := nf.Error()
 	for _, want := range []string{"npm install -g @anthropic-ai/claude-code", "WithCLIPath", ".npm-global"} {
 		if !strings.Contains(msg, want) {
@@ -121,25 +129,28 @@ func TestResolveCLIPath_NotFoundActionable(t *testing.T) {
 }
 
 func TestNew_FailsWhenCLINotFound(t *testing.T) {
-
 	withCLIStubHome(t)
 	t.Setenv("PATH", "")
 
 	_, err := New(t.TempDir())
+
 	var nf *CLINotFoundError
+
 	if err == nil {
 		t.Fatal("New() succeeded, want CLINotFoundError")
 	}
-	if e, ok := err.(*CLINotFoundError); !ok {
+
+	e := &CLINotFoundError{}
+	if !errors.As(err, &e) {
 		t.Fatalf("New() error = %T, want *CLINotFoundError", err)
 	} else {
 		nf = e
 	}
+
 	_ = nf
 }
 
 func TestNew_DiscoveryFallbackSpawnsStub(t *testing.T) {
-
 	home := withCLIStubHome(t)
 	t.Setenv("PATH", "")
 
@@ -147,10 +158,12 @@ func TestNew_DiscoveryFallbackSpawnsStub(t *testing.T) {
 	writeStubCLI(t, stub)
 
 	env := append(os.Environ(), "CLAUDECODE_FAKE_CLI=1", "CLAUDECODE_FAKE_SCENARIO=malformed")
+
 	c, err := New(t.TempDir(), withExtraEnv(env), WithLogWriter(&lockedBuffer{}))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+
 	defer func() { _ = c.Close() }()
 
 	if got := c.tr.cmd.Path; got != stub {
@@ -164,6 +177,7 @@ func TestClient_CloseSigtermStage(t *testing.T) {
 	opts := append(fakeCLIOptions(t, "sigterm_exit"), withCloseGracePeriod(200*time.Millisecond))
 
 	start := time.Now()
+
 	c, err := New(t.TempDir(), opts...)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -191,6 +205,7 @@ func TestClient_CloseSigkillStage(t *testing.T) {
 	opts := append(fakeCLIOptions(t, "ignore_signals"), withCloseGracePeriod(200*time.Millisecond))
 
 	start := time.Now()
+
 	c, err := New(t.TempDir(), opts...)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -214,22 +229,27 @@ func TestClient_VersionCheckWarnsBelowMinimum(t *testing.T) {
 	t.Parallel()
 
 	var log lockedBuffer
+
 	env := append(os.Environ(),
 		"CLAUDECODE_FAKE_CLI=1",
 		"CLAUDECODE_FAKE_SCENARIO=malformed",
 		"CLAUDECODE_FAKE_VERSION=1.0.3",
 	)
+
 	self, exeErr := os.Executable()
 	if exeErr != nil {
 		t.Fatal(exeErr)
 	}
+
 	opts := []Option{WithCLIPath(self), withExtraEnv(env), WithLogWriter(&log)}
 
 	start := time.Now()
+
 	c, err := New(t.TempDir(), opts...)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+
 	defer func() { _ = c.Close() }()
 
 	if time.Since(start) > 2*time.Second {
@@ -241,8 +261,10 @@ func TestClient_VersionCheckWarnsBelowMinimum(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatalf("version warning never logged, got: %q", log.String())
 		}
+
 		time.Sleep(10 * time.Millisecond)
 	}
+
 	if !strings.Contains(log.String(), "1.0.3") || !strings.Contains(log.String(), minimumCLIVersion) {
 		t.Fatalf("warning missing versions: %q", log.String())
 	}
@@ -256,17 +278,21 @@ func TestClient_VersionCheckNoLogWriter(t *testing.T) {
 		"CLAUDECODE_FAKE_SCENARIO=malformed",
 		"CLAUDECODE_FAKE_VERSION=1.0.3",
 	)
+
 	self, exeErr := os.Executable()
 	if exeErr != nil {
 		t.Fatal(exeErr)
 	}
+
 	opts := []Option{WithCLIPath(self), withExtraEnv(env)}
 
 	start := time.Now()
+
 	c, err := New(t.TempDir(), opts...)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+
 	defer func() { _ = c.Close() }()
 
 	if time.Since(start) > 2*time.Second {
@@ -282,17 +308,21 @@ func TestClient_VersionCheckHangingProbeDoesNotBlock(t *testing.T) {
 		"CLAUDECODE_FAKE_SCENARIO=malformed",
 		"CLAUDECODE_FAKE_VERSION=hang",
 	)
+
 	self, exeErr := os.Executable()
 	if exeErr != nil {
 		t.Fatal(exeErr)
 	}
+
 	opts := []Option{WithCLIPath(self), withExtraEnv(env), WithLogWriter(&lockedBuffer{})}
 
 	start := time.Now()
+
 	c, err := New(t.TempDir(), opts...)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+
 	defer func() { _ = c.Close() }()
 
 	// The probe sleeps an hour; New must still return immediately (the

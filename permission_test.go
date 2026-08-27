@@ -21,7 +21,7 @@ func marshalUpdate(t *testing.T, u PermissionUpdate) map[string]any {
 	return m
 }
 
-func assertKeys(t *testing.T, m map[string]any, want map[string]any, absent ...string) {
+func assertKeys(t *testing.T, m, want map[string]any, absent ...string) {
 	t.Helper()
 
 	for k, v := range want {

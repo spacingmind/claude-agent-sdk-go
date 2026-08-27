@@ -613,18 +613,22 @@ func TestClient_CanUseToolRoundTripFields(t *testing.T) {
 	if perm0["type"] != "addRules" || perm0["behavior"] != "deny" || perm0["destination"] != "session" {
 		t.Fatalf("response 0 perm[0] = %#v", perm0)
 	}
+
 	if rules, _ := perm0["rules"].([]any); len(rules) != 1 {
 		t.Fatalf("response 0 perm[0] rules = %#v", perm0["rules"])
 	} else if r, _ := rules[0].(map[string]any); r["toolName"] != "Bash" || r["ruleContent"] != "rm -rf *" {
 		t.Fatalf("response 0 perm[0] rules[0] = %#v", r)
 	}
+
 	perm1, _ := perms[1].(map[string]any)
 	if perm1["type"] != "setMode" || perm1["mode"] != "plan" {
 		t.Fatalf("response 0 perm[1] = %#v", perm1)
 	}
+
 	if _, present := perm1["rules"]; present {
 		t.Fatalf("response 0 perm[1] unexpectedly contains rules: %#v", perm1)
 	}
+
 	if _, present := perm1["destination"]; present {
 		t.Fatalf("response 0 perm[1] unexpectedly contains destination: %#v", perm1)
 	}

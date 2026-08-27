@@ -60,6 +60,7 @@ func runFakeCLI() {
 		default:
 			fmt.Println(v)
 		}
+
 		os.Exit(0)
 	}
 
@@ -297,26 +298,33 @@ func runFakeCLI() {
 		// is recorded too (and counts toward MAX_LINES), so tests can
 		// assert the initialize payload's exact shape.
 		recordInit := os.Getenv("CLAUDECODE_FAKE_RECORD_INIT") == "1"
+
 		var lines []string
+
 		if recordInit {
 			if !stdin.Scan() {
 				panic("fake cli: stdin closed before initialize")
 			}
+
 			lines = append(lines, stdin.Text())
+
 			var initEnv struct {
 				RequestID string `json:"request_id"`
 			}
 			if err := json.Unmarshal(stdin.Bytes(), &initEnv); err != nil {
 				panic(fmt.Sprintf("fake cli: unmarshal initialize: %v", err))
 			}
+
 			writeLine(controlResponseLine(initEnv.RequestID, map[string]any{"success": true}))
 		} else {
 			ackInitialize()
 		}
+
 		maxReqs, _ := strconv.Atoi(os.Getenv("CLAUDECODE_FAKE_MAX_LINES"))
 		if recordInit {
 			maxReqs--
 		}
+
 		seen := 0
 		for seen < maxReqs && stdin.Scan() {
 			lines = append(lines, stdin.Text())
@@ -909,12 +917,15 @@ func runFakeCLI() {
 		// cleanly (status 0) when SIGTERM arrives -- for the close
 		// escalation's stage-2 test.
 		ackInitialize()
+
 		sc := make(chan os.Signal, 1)
 		signal.Notify(sc, syscall.SIGTERM)
+
 		go func() {
 			for stdin.Scan() {
 			}
 		}()
+
 		<-sc
 		os.Exit(0)
 

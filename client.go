@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -619,7 +620,7 @@ type Client struct {
 // autonomous run can opt in explicitly with
 // WithPermissionMode("bypassPermissions") and/or
 // WithPermissionPolicy(AutoApprovePolicy{}).
-func New(worktreePath string, opts ...Option) (*Client, error) {
+func New(worktreePath string, opts ...Option) (*Client, error) { //nolint:gocyclo,funlen  // sequential construction steps (options, binary resolution, spawn, initialize handshake), not nested branching
 	o := options{
 		permissionMode:   "default",
 		permissionPolicy: AutoDenyPolicy{},
@@ -649,6 +650,7 @@ func New(worktreePath string, opts ...Option) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	o.settings = settings
 
 	args := buildArgs(&o)
@@ -661,6 +663,7 @@ func New(worktreePath string, opts ...Option) (*Client, error) {
 		if o.enableFileCheckpointing && !hasEnvKey(caller, "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING") {
 			caller = append([]string{"CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true"}, caller...)
 		}
+
 		env = buildEnv(caller)
 	}
 
@@ -706,6 +709,7 @@ func New(worktreePath string, opts ...Option) (*Client, error) {
 	if len(o.hooks) > 0 || len(o.agents) > 0 || skillsListActive(o.skills) {
 		initExtra = map[string]any{}
 	}
+
 	if len(o.hooks) > 0 {
 		hooksPayload := map[string][]map[string]any{}
 		counter := 0
@@ -733,11 +737,14 @@ func New(worktreePath string, opts ...Option) (*Client, error) {
 				hooksPayload[string(event)] = append(hooksPayload[string(event)], entry)
 			}
 		}
+
 		initExtra["hooks"] = hooksPayload
 	}
+
 	if len(o.agents) > 0 {
 		initExtra["agents"] = o.agents
 	}
+
 	if skillsListActive(o.skills) {
 		initExtra["skills"] = o.skills.list
 	}
@@ -844,6 +851,7 @@ func buildArgs(o *options) []string { //nolint:gocyclo,funlen  // flat one-flag-
 	if o.strictMcpConfig {
 		args = append(args, "--strict-mcp-config")
 	}
+
 	sources := o.settingSources
 	if !o.settingSourcesSet && skillsActive(o.skills) {
 		// Python's _apply_skills_defaults: skills need user/project
@@ -851,6 +859,7 @@ func buildArgs(o *options) []string { //nolint:gocyclo,funlen  // flat one-flag-
 		// caller didn't choose sources themselves.
 		sources = []string{"user", "project"}
 	}
+
 	if o.settingSourcesSet || sources != nil {
 		// Equals form so a source name can never be parsed as a separate
 		// flag, mirroring the Python SDK's guard. Emitted whenever
@@ -951,6 +960,7 @@ func effectiveAllowedTools(o *options) []string {
 	if !skillsActive(o.skills) {
 		return allowed
 	}
+
 	var derived []string
 	if o.skills.all {
 		derived = []string{"Skill"}
@@ -959,11 +969,13 @@ func effectiveAllowedTools(o *options) []string {
 			derived = append(derived, "Skill("+name+")")
 		}
 	}
+
 	for _, d := range derived {
-		if !containsString(allowed, d) {
+		if !slices.Contains(allowed, d) {
 			allowed = append(allowed, d)
 		}
 	}
+
 	return allowed
 }
 
@@ -973,15 +985,7 @@ func hasEnvKey(env []string, key string) bool {
 			return true
 		}
 	}
-	return false
-}
 
-func containsString(list []string, want string) bool {
-	for _, s := range list {
-		if s == want {
-			return true
-		}
-	}
 	return false
 }
 
@@ -995,21 +999,26 @@ func resolveSettings(o *options) (string, error) {
 	if o.sandbox == nil {
 		return o.settings, nil
 	}
+
 	sandboxJSON, err := json.Marshal(*o.sandbox)
 	if err != nil {
 		return "", fmt.Errorf("claudecode: marshal sandbox settings: %w", err)
 	}
+
 	merged := map[string]json.RawMessage{}
 	if o.settings != "" {
 		if err := json.Unmarshal([]byte(o.settings), &merged); err != nil {
 			return "", fmt.Errorf("claudecode: WithSettings value is not inline JSON (a file path?) and cannot be merged with WithSandbox: %w", err)
 		}
 	}
+
 	merged["sandbox"] = sandboxJSON
+
 	out, err := json.Marshal(merged)
 	if err != nil {
 		return "", fmt.Errorf("claudecode: marshal merged settings: %w", err)
 	}
+
 	return string(out), nil
 }
 
@@ -1026,7 +1035,8 @@ func QueryOnce(ctx context.Context, worktreePath, text string, updates chan<- Me
 		close(updates)
 		return ResultMessage{}, err
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
+
 	return c.Prompt(ctx, text, updates)
 }
 
