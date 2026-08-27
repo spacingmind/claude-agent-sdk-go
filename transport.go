@@ -3,12 +3,14 @@ package claudecode
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -36,6 +38,17 @@ type transport struct {
 
 	lines  chan lineResult
 	closed chan struct{}
+
+	// exitCode carries the subprocess's reaped exit code from the waiter
+	// goroutine to readLoop's consumer (the Client), for ProcessError. -1
+	// until the process is reaped.
+	exitCode atomic.Int32
+
+	// waitDone closes once the single waiter goroutine has reaped the
+	// subprocess and published waitErr (written before the close, so any
+	// reader after <-waitDone sees it without further synchronization).
+	waitDone chan struct{}
+	waitErr  error
 
 	closeOnce sync.Once
 }
@@ -88,27 +101,74 @@ func startTransport(worktreePath, cliPath string, args, env []string, stderr io.
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return nil, fmt.Errorf("claudecode: stdin pipe: %w", err)
+		return nil, &CLIConnectionError{Err: fmt.Errorf("stdin pipe: %w", err)}
 	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, fmt.Errorf("claudecode: stdout pipe: %w", err)
+		return nil, &CLIConnectionError{Err: fmt.Errorf("stdout pipe: %w", err)}
 	}
 
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("claudecode: start %s: %w", cliPath, err)
+		if isNotFoundErr(err) {
+			return nil, &CLINotFoundError{Path: cliPath, Err: err}
+		}
+
+		return nil, &CLIConnectionError{Err: fmt.Errorf("start %s: %w", cliPath, err)}
 	}
 
 	t := &transport{
-		cmd:    cmd,
-		stdin:  stdin,
-		lines:  make(chan lineResult),
-		closed: make(chan struct{}),
+		cmd:      cmd,
+		stdin:    stdin,
+		lines:    make(chan lineResult),
+		closed:   make(chan struct{}),
+		waitDone: make(chan struct{}),
 	}
+	t.exitCode.Store(-1)
 	go t.readLoop(stdout)
+	go t.wait()
 
 	return t, nil
+}
+
+// isNotFoundErr reports whether a cmd.Start failure means the binary itself
+// could not be found or executed: an exec.ErrNotFound in the chain, or a
+// syscall-level not-exist/permission-denied on the resolved path.
+func isNotFoundErr(err error) bool {
+	if errors.Is(err, exec.ErrNotFound) {
+		return true
+	}
+
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		return errors.Is(pathErr.Err, os.ErrNotExist) || errors.Is(pathErr.Err, os.ErrPermission)
+	}
+
+	return false
+}
+
+// wait is the single reaper for the subprocess: exactly one goroutine may
+// call cmd.Wait. It publishes the wait error and exit code so close and
+// ProcessError construction can consume them without racing.
+// exited reports whether the subprocess has been reaped yet, race-free
+// (cmd.ProcessState must only be touched by the waiter goroutine).
+func (t *transport) exited() bool {
+	select {
+	case <-t.waitDone:
+		return true
+	default:
+		return false
+	}
+}
+
+func (t *transport) wait() {
+	t.waitErr = t.cmd.Wait()
+
+	if t.cmd.ProcessState != nil {
+		t.exitCode.Store(int32(t.cmd.ProcessState.ExitCode()))
+	}
+
+	close(t.waitDone)
 }
 
 func (t *transport) readLoop(stdout io.Reader) {
@@ -164,16 +224,13 @@ func (t *transport) close(gracePeriod time.Duration) error {
 		close(t.closed)
 		_ = t.stdin.Close()
 
-		done := make(chan error, 1)
-		go func() { done <- t.cmd.Wait() }()
-
 		select {
-		case err := <-done:
-			closeErr = err
+		case <-t.waitDone:
+			closeErr = t.waitErr
 		case <-time.After(gracePeriod):
 			_ = t.cmd.Process.Kill()
 
-			<-done
+			<-t.waitDone
 		}
 	})
 

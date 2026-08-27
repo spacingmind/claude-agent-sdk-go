@@ -65,16 +65,24 @@ func (c *Client) readLoop() { //nolint:gocyclo  // flat per-message-type dispatc
 	defer close(c.msgs)
 	defer c.failAllPending(errors.New("claudecode: cli connection closed"))
 
+	// lastResult tracks the most recent ResultMessage forwarded to c.msgs
+	// so an abnormal stream end can be classified as a ResultError (the
+	// turn itself failed) rather than a plain ProcessError.
+	var lastResult *ResultMessage
+
 	for {
 		select {
 		case <-c.closing:
+			// Clean shutdown via Close: not a stream error.
 			return
 		case lr, ok := <-c.tr.lines:
 			if !ok {
+				c.setStreamErr(c.streamEndError(lastResult))
 				return
 			}
 
 			if lr.err != nil {
+				c.setStreamErr(c.streamEndError(lastResult))
 				return
 			}
 
@@ -98,6 +106,11 @@ func (c *Client) readLoop() { //nolint:gocyclo  // flat per-message-type dispatc
 			case *controlCancelRequest:
 				c.cancelInflightHandler(v.RequestID)
 			case Message:
+				if res, isResult := v.(ResultMessage); isResult {
+					r := res
+					lastResult = &r
+				}
+
 				select {
 				case c.msgs <- v:
 				case <-c.closing:
@@ -106,6 +119,36 @@ func (c *Client) readLoop() { //nolint:gocyclo  // flat per-message-type dispatc
 			}
 		}
 	}
+}
+
+// streamEndError classifies an abnormal line-stream end (the transport
+// closed or errored on its own, not via Close): a preceding errored
+// ResultMessage wins over the generic ProcessError; the two are mutually
+// exclusive.
+func (c *Client) streamEndError(lastResult *ResultMessage) error {
+	if lastResult != nil && lastResult.IsError {
+		return &ResultError{Result: *lastResult, Text: resultErrorText(*lastResult)}
+	}
+
+	return &ProcessError{ExitCode: int(c.tr.exitCode.Load())}
+}
+
+func (c *Client) setStreamErr(err error) {
+	c.streamErrMu.Lock()
+	c.streamErr = err
+	c.streamErrMu.Unlock()
+}
+
+// Err reports why the message stream from ReceiveMessages/ReceiveResponse
+// ended, following the bufio.Scanner.Err / sql.Rows.Err convention: check
+// it after the channel closes. It returns nil after a clean Close() and
+// non-nil when the CLI ended the stream on its own (crash, read error, or
+// an errored turn result). Safe to call from any goroutine.
+func (c *Client) Err() error {
+	c.streamErrMu.Lock()
+	defer c.streamErrMu.Unlock()
+
+	return c.streamErr
 }
 
 // sendControlRequest writes one outbound control request and blocks until the
@@ -486,7 +529,7 @@ func (c *Client) GetMCPStatus(ctx context.Context) (*McpStatusResponse, error) {
 
 	var status McpStatusResponse
 	if err := json.Unmarshal(resp.Response, &status); err != nil {
-		return nil, fmt.Errorf("claudecode: parse mcp_status response: %w", err)
+		return nil, &CLIJSONDecodeError{Data: string(resp.Response), Err: err}
 	}
 
 	return &status, nil
@@ -501,7 +544,7 @@ func (c *Client) GetContextUsage(ctx context.Context) (*ContextUsageResponse, er
 
 	var usage ContextUsageResponse
 	if err := json.Unmarshal(resp.Response, &usage); err != nil {
-		return nil, fmt.Errorf("claudecode: parse get_context_usage response: %w", err)
+		return nil, &CLIJSONDecodeError{Data: string(resp.Response), Err: err}
 	}
 
 	usage.Raw = append(json.RawMessage(nil), resp.Response...)
