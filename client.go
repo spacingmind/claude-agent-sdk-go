@@ -89,6 +89,7 @@ type options struct {
 	settings             string
 	addDirs              []string
 	mcpConfig            string
+	sdkMcpServerList     []*SdkMcpServer
 	includePartial       bool
 	includeHookEvents    bool
 	strictMcpConfig      bool
@@ -261,6 +262,18 @@ func WithAddDirs(dirs ...string) Option {
 // here.
 func WithMCPConfig(config string) Option {
 	return func(o *options) { o.mcpConfig = config }
+}
+
+// WithSDKMcpServer registers an in-process MCP server whose tools the
+// CLI's model can call, tunneled as mcp_message control requests. At New()
+// time the server contributes a {"type":"sdk","name":...} entry to
+// --mcp-config. Registering two servers with the same name is a New()
+// error, not a silent overwrite. When combined with an inline-JSON
+// WithMCPConfig value the two mcpServers maps are merged (SDK entries win
+// on name collision); a file-path WithMCPConfig value cannot be merged
+// with and errors at New() time.
+func WithSDKMcpServer(server *SdkMcpServer) Option {
+	return func(o *options) { o.sdkMcpServerList = append(o.sdkMcpServerList, server) }
 }
 
 // WithIncludePartialMessages enables partial message streaming
@@ -460,6 +473,11 @@ type Client struct {
 	hookMu        sync.Mutex
 	hookCallbacks map[string]HookCallback
 
+	// sdkMcpServers is populated once in New and never mutated afterward,
+	// so reads from dispatch goroutines need no lock (SdkMcpServer's own
+	// mutex guards its tool map).
+	sdkMcpServers map[string]*SdkMcpServer
+
 	baseCtx    context.Context
 	baseCancel context.CancelFunc
 }
@@ -488,6 +506,20 @@ func New(worktreePath string, opts ...Option) (*Client, error) {
 		opt(&o)
 	}
 
+	sdkServers := make(map[string]*SdkMcpServer, len(o.sdkMcpServerList))
+	for _, s := range o.sdkMcpServerList {
+		if _, dup := sdkServers[s.name]; dup {
+			return nil, fmt.Errorf("claudecode: duplicate SDK MCP server name %q", s.name)
+		}
+		sdkServers[s.name] = s
+	}
+
+	mcpConfig, err := resolveMCPConfig(&o)
+	if err != nil {
+		return nil, err
+	}
+	o.mcpConfig = mcpConfig
+
 	args := buildArgs(&o)
 
 	// WithEnv merges onto the inherited environment (see buildEnv);
@@ -512,6 +544,7 @@ func New(worktreePath string, opts ...Option) (*Client, error) {
 		pending:          make(map[string]*pendingEntry),
 		inflight:         make(map[string]context.CancelFunc),
 		hookCallbacks:    make(map[string]HookCallback),
+		sdkMcpServers:    sdkServers,
 		baseCtx:          baseCtx,
 		baseCancel:       baseCancel,
 	}
