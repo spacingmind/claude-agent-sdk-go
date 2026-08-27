@@ -868,6 +868,30 @@ func runFakeCLI() {
 			"result":     string(dump),
 		})
 
+	case "crash_result_error":
+		// Acknowledge initialize, consume the prompt, send an errored
+		// result message, then exit with stdout closed -- the client's
+		// Err() must classify the abnormal end as a ResultError (not a
+		// ProcessError).
+		ackInitialize()
+		stdin.Scan()
+		writeLine(map[string]any{
+			"type":        "result",
+			"subtype":     "error_max_turns",
+			"is_error":    true,
+			"num_turns":   1,
+			"session_id":  "sess-1",
+			"result":      "boom",
+			"stop_reason": "error",
+			"errors":      []string{"err-one", "err-two"},
+		})
+		os.Exit(0)
+
+	case "exit_immediately":
+		// Exit before acknowledging initialize: the initialize handshake
+		// never completes, so New() must fail with a CLIConnectionError.
+		os.Exit(0)
+
 	case "crash":
 		// Acknowledge initialize, consume the prompt, then exit with stdout
 		// closed mid-turn -- simulates a CLI crash. Any pending outbound

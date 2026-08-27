@@ -577,6 +577,11 @@ type Client struct {
 	msgs    chan Message
 	closing chan struct{}
 
+	// streamErr records why readLoop ended the message stream (nil for a
+	// clean Close), read via Err after the stream channel closes.
+	streamErr   error
+	streamErrMu sync.RWMutex
+
 	closeOnce sync.Once
 
 	pending   map[string]*pendingEntry
@@ -731,7 +736,7 @@ func New(worktreePath string, opts ...Option) (*Client, error) {
 
 	if _, err := c.sendControlRequest(context.Background(), "initialize", initExtra); err != nil {
 		_ = c.Close()
-		return nil, fmt.Errorf("claudecode: initialize: %w", err)
+		return nil, &CLIConnectionError{Err: fmt.Errorf("initialize: %w", err)}
 	}
 
 	return c, nil

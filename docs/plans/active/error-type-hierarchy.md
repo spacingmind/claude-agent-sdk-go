@@ -98,8 +98,75 @@ lines rather than fail the turn" policy in `decodeLine`.
 
 ## Progress
 
-Not started.
+Complete. Implemented on `sdk-parity/error-hierarchy`:
+
+- `errors.go`: the five types (`CLINotFoundError`, `CLIConnectionError`,
+  `ProcessError`, `ResultError`, `CLIJSONDecodeError`) with `Error()` and
+  `Unwrap()` (where an `Err` field exists), plus `resultErrorText` (the
+  Errors-joined / Result / StopReason / fallback Text derivation).
+- `transport.go`: `startTransport` classifies `cmd.Start()` failures —
+  `exec.ErrNotFound` in the chain or an `os.PathError` with
+  not-exist/permission becomes `CLINotFoundError`; pipe-creation and other
+  start failures become `CLIConnectionError`. Added a single waiter
+  goroutine (`transport.wait`) that reaps the subprocess once and publishes
+  its exit code (`exitCode`, -1 until reaped) and wait error; `close` now
+  consumes that result instead of calling `cmd.Wait()` itself (a second
+  `Wait` on the same `Cmd` is a data race). Added a race-free
+  `transport.exited()` used by the persistence test that previously read
+  `cmd.ProcessState` directly.
+- `client.go`: the failed `initialize` handshake in `New()` wraps as
+  `CLIConnectionError`. Added `streamErr` field (RWMutex-guarded).
+- `engine.go`: `readLoop` tracks the last forwarded `ResultMessage` and, on
+  an abnormal stream end (transport closed or read error, not `Close()`),
+  records `ResultError` (if that result had `IsError: true`) or
+  `ProcessError` (carrying the reaped exit code) via `setStreamErr`; clean
+  `Close()` leaves it nil. `GetMCPStatus`/`GetContextUsage` payload decode
+  failures wrap as `CLIJSONDecodeError`. `decodeLine`/`messages.go`
+  untouched.
+- `Client.Err()` (addition beyond the original AC list — see Decisions):
+  follows the `bufio.Scanner.Err()`/`sql.Rows.Err()` convention so
+  `ReceiveMessages`/`ReceiveResponse` consumers can distinguish a clean
+  stream end (`Close()`, nil) from an abnormal one after the channel
+  closes; without it, `ProcessError`/`ResultError` were unreachable by
+  callers. Safe to call from any goroutine.
+- `fakecli_test.go`: new scenarios `crash_result_error` (errored result
+  then exit) and `exit_immediately` (exits before initialize).
+- `errors_test.go`: CLINotFound (missing path, non-executable file),
+  CLIConnection on failed handshake, Err() nil after clean Close, Err() as
+  ProcessError after mid-turn crash, Err() as ResultError after errored
+  result + crash (with Text assertion), CLIJSONDecodeError for malformed
+  mcp_status/get_context_usage payloads.
+
+## Decisions (added this phase)
+
+- `Client.Err()` was added beyond the plan doc's AC 1-7: the review that
+  produced this phase found that `readLoop` closed `c.msgs` with no error
+  signal either way, making `ProcessError`/`ResultError` (AC 4-5)
+  unreachable by stream consumers. `Err()` is the minimal, convention-
+  matching surface that makes them observable.
 
 ## Validation
 
-Not yet applicable.
+All commands run on `sdk-parity/error-hierarchy`, all clean:
+
+- `go build -buildvcs=false ./...` — ok.
+- `go test -race -count=1 ./...` — ok (11.4s). Two races found and fixed
+  along the way: (1) my initial second `cmd.Wait` in a reaper goroutine
+  raced `close`'s own `Wait` — fixed by the single-waiter design described
+  in Progress; (2) `TestClient_SequentialPromptsReuseSubprocess` read
+  `cmd.ProcessState` directly, now racing the waiter goroutine — switched
+  to the new race-free `transport.exited()`.
+- `go vet ./...` — clean. `gofmt -l .` — no output.
+- Zero leaked fake-CLI processes after the run
+  (`ps aux | grep claude-agent-sdk-go.test` empty).
+
+Acceptance criteria 1-7 confirmed: 1 (errors.go types), 2 (CLINotFound
+classification + tests), 3 (CLIConnectionError on pipes/start/handshake +
+test), 4/5 (mutually exclusive ProcessError/ResultError via `Err()`,
+tests assert both directions), 6 (CLIJSONDecodeError in both status
+methods, decodeLine untouched), 7 (no broad refactor — `sessions.go`,
+`mcp.go`, option validation untouched). All Test Scenarios covered by
+`errors_test.go`; the regression scenario is covered by the existing
+`TestDecodeLine_MalformedLinesStillError` passing unchanged. Plan doc
+retained in `docs/plans/active/` (move to completed happens at merge time,
+matching how earlier phases handled it).

@@ -104,7 +104,7 @@ func TestClient_SequentialPromptsReuseSubprocess(t *testing.T) {
 		}
 	}
 
-	if c.tr.cmd.ProcessState != nil {
+	if c.tr.exited() {
 		t.Fatal("subprocess exited between turns; want one persistent process")
 	}
 }
