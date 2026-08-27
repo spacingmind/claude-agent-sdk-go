@@ -51,8 +51,55 @@ actually usable), and a one-shot `QueryOnce` convenience function
 
 ## Progress
 
-Not started.
+Complete. Implementation in `client.go` (types `AgentDefinition`,
+`SandboxSettings`/`SandboxNetworkConfig`/`SandboxIgnoreViolations`,
+`skillsConfig`; options `WithAgents`, `WithSkills`, `WithAllSkills`,
+`WithSandbox`, `WithEnableFileCheckpointing`; helpers `resolveSettings`,
+`effectiveAllowedTools`, `skillsActive`/`skillsListActive`, `hasEnvKey`;
+`QueryOnce`), plus two test-harness touches in `fakecli_test.go` (capture
+scenario now also reports its PID; capture_stdin gained
+`CLAUDECODE_FAKE_RECORD_INIT=1` to record the initialize request itself).
+Tests in `options_test.go`.
+
+Two fixes that surfaced during test runs:
+
+- `QueryOnce` closes `updates` when `New()` fails too, upholding Prompt's
+  "updates is always closed" guarantee on every QueryOnce return path
+  (otherwise a consumer ranging over updates hangs forever).
+- `WithSettingSources` gained a `settingSourcesSet` tracking flag so an
+  explicit zero-arg call (nil slice, same as "never called" under plain
+  nil checks) suppresses skills defaulting and emits `--setting-sources=`
+  itself, per AC 5's "never explicitly called" wording.
 
 ## Validation
 
-Not yet applicable.
+- `go build -buildvcs=false ./...`, `go vet ./...`, `gofmt -l .` clean;
+  `go test -race -count=1 ./...` passes with no hangs and no leaked
+  fake-CLI processes (`ps aux | grep claude-agent-sdk-go.test` empty
+  after the run).
+- AC 1-2 (agents): `TestClient_WithAgentsInitializePayload` asserts the
+  exact `"agents"` key/shape in the captured initialize request,
+  including camelCase keys and omission of every zero-value field on an
+  all-zero agent; `TestClient_WithAgentsUnsetOmitsKey` covers the
+  unset case (New succeeds, initialize acked normally).
+- AC 3-5 (skills): `TestClient_WithSkillsInitializePayload` asserts
+  `"skills":["alpha","beta"]`; `TestClient_WithAllSkillsOmitsSkillsKey`
+  asserts no `"skills"` key under the all-sentinel;
+  `TestClient_SkillsAllowedToolsUnion` covers `Skill`, `Skill(<name>)`
+  entries, and no duplication with explicit `WithAllowedTools` entries;
+  `TestClient_SkillsSettingSourcesDefaulting` covers the `user,project`
+  default, explicit non-override, and the explicit-zero-arg edge.
+- AC 6-7 (sandbox): `TestClient_WithSandboxAlone`,
+  `TestClient_WithSandboxMergesWithSettings` (including overwriting a
+  pre-existing `"sandbox"` key and preserving sibling keys),
+  `TestClient_WithSandboxNonJSONSettingsError`, and
+  `TestClient_SandboxSettingsJSON` (all-pointer-nil structs marshal to
+  `{}` -- no `null` clutter).
+- AC 8 (checkpointing): `TestClient_EnableFileCheckpointingEnv` (same
+  env-capture pattern as `TestClient_EnvMerge`) asserts the env var is
+  set on the subprocess and that a caller `WithEnv` value wins.
+- AC 9 (QueryOnce): `TestQueryOnce_RoundTrip` asserts the returned
+  ResultMessage and, via the capture scenario's now-reported PID, that
+  the subprocess is gone (closed and reaped) after QueryOnce returns;
+  `TestQueryOnce_NewErrorPropagates` asserts a bad `WithCLIPath` error
+  propagates and `updates` is closed even then.
