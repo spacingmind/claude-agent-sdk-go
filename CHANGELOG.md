@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/spacingmind/claude-agent-sdk-go/compare/v0.3.1...v0.3.2) (2026-08-28)
+
+
+### Bug Fixes
+
+* goreleaser changelog exclude filters ignore commit scopes ([#13](https://github.com/spacingmind/claude-agent-sdk-go/issues/13)) ([28093c2](https://github.com/spacingmind/claude-agent-sdk-go/commit/28093c29578c3fa565750b6ff1816276605f88f5))
+
 ## [0.3.1](https://github.com/spacingmind/claude-agent-sdk-go/compare/v0.3.0...v0.3.1) (2026-08-28)
 
 
