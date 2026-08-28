@@ -6,12 +6,18 @@
 # accumulated since the last release, and either:
 #   - opens/updates a "chore(main): release X.Y.Z" PR containing the
 #     version bump + CHANGELOG.md, if there's nothing to release yet, or
-#   - once that release PR is itself merged, creates the vX.Y.Z git tag.
+#   - once that release PR is itself merged, creates the vX.Y.Z git tag
+#     and a (plain) GitHub Release.
 #
-# skip-github-release is intentionally true: this action only ever manages
-# the version number, CHANGELOG.md, and the tag. Pushing that tag triggers
-# release.yml (goreleaser), which is the sole creator of the actual GitHub
-# Release -- avoiding two competing release objects for the same tag.
+# Deliberately NOT using skip-github-release: that flag breaks
+# release-please's own tag-tracking (a known upstream issue -- it gets
+# permanently stuck reporting "untagged, merged release PRs outstanding"
+# after the first release, see googleapis/release-please#1561 and
+# googleapis/release-please-action#1034). Instead, we let release-please
+# create its own release normally, and rely on release.yml's goreleaser
+# step (release.mode: replace) to overwrite it with our nicer-formatted
+# one once the vX.Y.Z tag lands -- goreleaser's replace mode exists
+# specifically for "another tool already made a release for this tag."
 name: release-please
 
 on:
@@ -30,4 +36,3 @@ jobs:
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-          skip-github-release: true
