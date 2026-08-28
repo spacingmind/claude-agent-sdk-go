@@ -3,10 +3,12 @@ package claudecode
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // fakeConfigHome points the session functions at a fresh temp directory
@@ -369,5 +371,142 @@ func TestGetSessionMessages_MissingSessionReturnsNil(t *testing.T) {
 	msgs, err := GetSessionMessages(uuidA, filepath.Join(home, "workspaces", "proj"), 0, 0)
 	if err != nil || msgs != nil {
 		t.Fatalf("missing session: got %v, %v; want nil, nil", msgs, err)
+	}
+}
+
+func TestTruncatePrompt(t *testing.T) {
+	t.Run("short string unchanged", func(t *testing.T) {
+		if got := truncatePrompt("hello"); got != "hello" {
+			t.Errorf("truncatePrompt(short) = %q, want unchanged", got)
+		}
+	})
+
+	t.Run("exactly 200 runes unchanged", func(t *testing.T) {
+		s := strings.Repeat("a", 200)
+		if got := truncatePrompt(s); got != s {
+			t.Errorf("truncatePrompt(200 runes) modified, want unchanged")
+		}
+	})
+
+	t.Run("long string truncates with ellipsis", func(t *testing.T) {
+		s := strings.Repeat("a", 250)
+		got := truncatePrompt(s)
+
+		if !strings.HasSuffix(got, "…") {
+			t.Errorf("truncatePrompt(long) = %q, want trailing ellipsis", got)
+		}
+
+		if n := len([]rune(got)); n != 200 {
+			t.Errorf("truncatePrompt(long) = %d runes (incl. ellipsis), want 200", n)
+		}
+	})
+
+	t.Run("truncates on rune boundary, not mid-byte", func(t *testing.T) {
+		// Multi-byte runes near the cut point must not be split.
+		s := strings.Repeat("é", 250) // each 'é' is 2 bytes in UTF-8
+		got := truncatePrompt(s)
+
+		if !utf8.ValidString(got) {
+			t.Errorf("truncatePrompt produced invalid UTF-8: %q", got)
+		}
+	})
+}
+
+func TestWorktreeProjectDirs(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	home := fakeConfigHome(t)
+
+	main := t.TempDir()
+
+	runGit := func(args ...string) {
+		t.Helper()
+
+		cmd := exec.Command("git", args...) //nolint:gosec,noctx  // fixed test-internal args, not user input; no context needed in a test helper
+		cmd.Dir = main
+
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+
+	runGit("init", "-q")
+	runGit("-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "--allow-empty", "-q", "-m", "init")
+
+	worktreeDir := t.TempDir() + "-wt"
+	runGit("worktree", "add", "-q", worktreeDir, "-b", "feature")
+
+	// worktreeProjectDirs resolves each worktree path to its session-storage
+	// directory under <config_home>/projects, mirroring resolveProjectDir --
+	// it never returns the raw filesystem path, so the fixture must have a
+	// matching sanitized storage dir for the lookup to succeed.
+	wantStorage := filepath.Join(home, "projects", sanitizeProjectDirName(worktreeDir))
+	if err := os.MkdirAll(wantStorage, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	dirs := worktreeProjectDirs(main)
+
+	found := false
+
+	for _, d := range dirs {
+		if d == wantStorage {
+			found = true
+		}
+	}
+
+	if !found {
+		t.Errorf("worktreeProjectDirs(%q) = %v, want to include %q", main, dirs, wantStorage)
+	}
+}
+
+func TestWorktreeProjectDirs_NotAGitRepo(t *testing.T) {
+	if got := worktreeProjectDirs(t.TempDir()); got != nil {
+		t.Errorf("worktreeProjectDirs(non-repo) = %v, want nil", got)
+	}
+}
+
+func TestReadLiteBuffers_LargeFileSplitsHeadTail(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "big.jsonl")
+
+	const chunk = 64 * 1024
+
+	data := make([]byte, 3*chunk)
+	for i := range data {
+		data[i] = byte('a' + i%26)
+	}
+
+	copy(data[:4], []byte("HEAD"))
+	copy(data[len(data)-4:], []byte("TAIL"))
+
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	head, tail, size, err := readLiteBuffers(path)
+	if err != nil {
+		t.Fatalf("readLiteBuffers: %v", err)
+	}
+
+	if size != int64(len(data)) {
+		t.Errorf("size = %d, want %d", size, len(data))
+	}
+
+	if len(head) != chunk || string(head[:4]) != "HEAD" {
+		t.Errorf("head = %d bytes starting %q, want %d bytes starting HEAD", len(head), head[:4], chunk)
+	}
+
+	if len(tail) != chunk || string(tail[len(tail)-4:]) != "TAIL" {
+		t.Errorf("tail = %d bytes ending %q, want %d bytes ending TAIL", len(tail), tail[len(tail)-4:], chunk)
+	}
+}
+
+func TestReadLiteBuffers_MissingFile(t *testing.T) {
+	_, _, _, err := readLiteBuffers(filepath.Join(t.TempDir(), "nope.jsonl"))
+	if err == nil {
+		t.Fatal("readLiteBuffers(missing file) = nil error, want error")
 	}
 }
