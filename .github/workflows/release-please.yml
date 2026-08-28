@@ -1,0 +1,33 @@
+# Runs on every push to `main` -- which, under this repo's branching model,
+# only happens when a `develop` -> `main` release PR is merged (feature
+# work lands on `develop` via PR first; `main` is release-only).
+#
+# release-please inspects Conventional Commits (feat:/fix:/BREAKING CHANGE)
+# accumulated since the last release, and either:
+#   - opens/updates a "chore(main): release X.Y.Z" PR containing the
+#     version bump + CHANGELOG.md, if there's nothing to release yet, or
+#   - once that release PR is itself merged, creates the vX.Y.Z git tag.
+#
+# skip-github-release is intentionally true: this action only ever manages
+# the version number, CHANGELOG.md, and the tag. Pushing that tag triggers
+# release.yml (goreleaser), which is the sole creator of the actual GitHub
+# Release -- avoiding two competing release objects for the same tag.
+name: release-please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          skip-github-release: true

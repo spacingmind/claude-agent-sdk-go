@@ -39,6 +39,35 @@ wire-protocol behavior, or how closely this package tracks the upstream
 Python/TypeScript SDKs, and isn't already decided in `docs/decisions/`, STOP
 and present the choice to the user. Do not decide architecture unilaterally.
 
+## Branching & release workflow
+
+- `main` is release-only. Do not commit or push directly to `main` going
+  forward (this repo did during the initial 1:1 parity port — that
+  history predates this rule, not an exception to it).
+- `develop` is the integration branch. Feature/fix work happens on
+  short-lived branches off `develop`, merged back via PR.
+- Releasing means opening a PR from `develop` into `main`. Merging that PR
+  is what triggers everything downstream:
+  1. `.github/workflows/release-please.yml` (on push to `main`) runs
+     [release-please](https://github.com/googleapis/release-please),
+     which reads Conventional Commits since the last release and either
+     opens/updates a `chore(main): release X.Y.Z` PR (version bump +
+     `CHANGELOG.md`), or — if that release PR is what just got merged —
+     creates the `vX.Y.Z` git tag directly.
+  2. Pushing that tag triggers `.github/workflows/release.yml`, which runs
+     `goreleaser` to build the actual GitHub Release (changelog grouping,
+     `pkg.go.dev` links) — `release-please` never creates the release
+     object itself (`skip-github-release: true`), only the tag/changelog/
+     version, to avoid two competing release objects for one tag.
+- **Commit messages merged into `main` must follow [Conventional
+  Commits](https://www.conventionalcommits.org/)** (`feat:`, `fix:`,
+  `feat!:`/`BREAKING CHANGE:` footer for breaking changes, `chore:`/
+  `docs:`/`ci:`/`test:` for everything release-please should exclude from
+  the changelog) — release-please cannot determine the correct version
+  bump or changelog entry without this. This matters most for the PR
+  title/squash-commit message that actually lands on `main`, not
+  necessarily every commit on the feature branch.
+
 ## refs/ map
 
 `refs/` holds read-only clones of the official Anthropic SDKs, used as the
