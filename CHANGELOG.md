@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.3](https://github.com/spacingmind/claude-agent-sdk-go/compare/v0.3.2...v0.3.3) (2026-08-28)
+
+
+### Bug Fixes
+
+* release-please tag/goreleaser pipeline fixes, PR title enforcement, coverage ([#16](https://github.com/spacingmind/claude-agent-sdk-go/issues/16)) ([1542af4](https://github.com/spacingmind/claude-agent-sdk-go/commit/1542af4187de17f106bfa0fae410941142417e5e))
+
 ## [0.3.2](https://github.com/spacingmind/claude-agent-sdk-go/compare/v0.3.1...v0.3.2) (2026-08-28)
 
 
