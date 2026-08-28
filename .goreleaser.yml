@@ -10,6 +10,13 @@ snapshot:
 changelog:
   sort: asc
   use: github
+  # Explicit format so a commit's raw git author name/email is never
+  # shown, only the commit message -- without this, goreleaser falls back
+  # to including "(Author Name <author@email>)" for any commit it can't
+  # resolve to a GitHub username (e.g. one pushed directly rather than
+  # merged via PR), which leaked a real email address in v0.1.0's first
+  # published release notes.
+  format: "{{ .SHA }}: {{ .Message }}"
   filters:
     exclude:
       - '^docs:'
