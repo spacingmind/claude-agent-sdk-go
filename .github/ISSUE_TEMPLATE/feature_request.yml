@@ -1,0 +1,19 @@
+name: Feature request
+description: Suggest an addition or change to claude-agent-sdk-go
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case
+      description: What are you trying to do, and how does the current API fall short?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+      description: Optional — a sketch of the API shape or behavior you have in mind.
+    validations:
+      required: false
