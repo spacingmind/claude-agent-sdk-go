@@ -56,9 +56,11 @@ and present the choice to the user. Do not decide architecture unilaterally.
      creates the `vX.Y.Z` git tag directly.
   2. Pushing that tag triggers `.github/workflows/release.yml`, which runs
      `goreleaser` to build the actual GitHub Release (changelog grouping,
-     `pkg.go.dev` links) — `release-please` never creates the release
-     object itself (`skip-github-release: true`), only the tag/changelog/
-     version, to avoid two competing release objects for one tag.
+     `pkg.go.dev` links). `release-please` also creates a plain release
+     for the tag, but `goreleaser`'s `release.mode: replace` overwrites it
+     with the nicer-formatted one — deliberately NOT using
+     `skip-github-release`, since that flag breaks release-please's own
+     tag-tracking (see `googleapis/release-please#1561`).
 - **Commit messages merged into `main` must follow [Conventional
   Commits](https://www.conventionalcommits.org/)** (`feat:`, `fix:`,
   `feat!:`/`BREAKING CHANGE:` footer for breaking changes, `chore:`/
