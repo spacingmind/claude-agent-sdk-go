@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/spacingmind/claude-agent-sdk-go/compare/claude-agent-sdk-go-v0.2.0...claude-agent-sdk-go-v0.2.1) (2026-08-28)
+
+
+### Bug Fixes
+
+* remove skip-github-release, it breaks release-please's tag tracking ([5dad4c9](https://github.com/spacingmind/claude-agent-sdk-go/commit/5dad4c9259f5e9a5efb7ead95a62241f12c2b4e7))
+
 ## [0.2.0](https://github.com/spacingmind/claude-agent-sdk-go/compare/claude-agent-sdk-go-v0.1.0...claude-agent-sdk-go-v0.2.0) (2026-08-28)
 
 
