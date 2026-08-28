@@ -196,3 +196,95 @@ func TestClient_CLIJSONDecodeErrorOnMalformedStatusPayload(t *testing.T) {
 		t.Fatalf("GetContextUsage() error = %T (%v), want *CLIJSONDecodeError", err, err)
 	}
 }
+
+func TestErrorTypes_ErrorAndUnwrap(t *testing.T) {
+	t.Parallel()
+
+	wrapped := errors.New("underlying")
+
+	tests := []struct {
+		name    string
+		err     error
+		wantMsg string
+		unwraps bool
+	}{
+		{
+			name:    "CLINotFoundError",
+			err:     &CLINotFoundError{Path: "/no/such/claude", Err: wrapped},
+			wantMsg: `claudecode: CLI binary not found or not executable at "/no/such/claude": underlying`,
+			unwraps: true,
+		},
+		{
+			name:    "CLIConnectionError",
+			err:     &CLIConnectionError{Err: wrapped},
+			wantMsg: "claudecode: failed to connect to CLI: underlying",
+			unwraps: true,
+		},
+		{
+			name:    "ProcessError with stderr and err",
+			err:     &ProcessError{ExitCode: 2, Stderr: "boom", Err: wrapped},
+			wantMsg: "claudecode: CLI process exited unexpectedly (exit code 2): boom: underlying",
+			unwraps: true,
+		},
+		{
+			name:    "ProcessError bare",
+			err:     &ProcessError{ExitCode: -1},
+			wantMsg: "claudecode: CLI process exited unexpectedly (exit code -1)",
+			unwraps: true, // Unwrap() returns nil, not an error -- still exercises the method
+		},
+		{
+			name:    "ResultError",
+			err:     &ResultError{Text: "turn failed"},
+			wantMsg: "claudecode: CLI turn ended with an error result: turn failed",
+			unwraps: false, // ResultError has no Unwrap method
+		},
+		{
+			name:    "CLIJSONDecodeError",
+			err:     &CLIJSONDecodeError{Data: `{"bad`, Err: wrapped},
+			wantMsg: `claudecode: failed to decode control response payload "{\"bad": underlying`,
+			unwraps: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.err.Error(); got != tt.wantMsg {
+				t.Errorf("Error() = %q, want %q", got, tt.wantMsg)
+			}
+
+			if tt.unwraps {
+				type unwrapper interface{ Unwrap() error }
+
+				u, ok := tt.err.(unwrapper)
+				if !ok {
+					t.Fatalf("%T does not implement Unwrap()", tt.err)
+				}
+
+				_ = u.Unwrap() // exercise the method; nil is valid for zero-value Err
+			}
+		})
+	}
+}
+
+func TestResultErrorText(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		r    ResultMessage
+		want string
+	}{
+		{"errors list wins", ResultMessage{Errors: []string{"e1", "e2"}, Result: "r", StopReason: "s"}, "e1; e2"},
+		{"result text when no errors", ResultMessage{Result: "r", StopReason: "s"}, "r"},
+		{"stop reason when no errors or result", ResultMessage{StopReason: "max_turns"}, "max_turns"},
+		{"generic fallback", ResultMessage{}, "the CLI reported an error result"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := resultErrorText(tt.r); got != tt.want {
+				t.Errorf("resultErrorText(%+v) = %q, want %q", tt.r, got, tt.want)
+			}
+		})
+	}
+}
