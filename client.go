@@ -1089,20 +1089,63 @@ func (c *Client) PromptBlocks(ctx context.Context, blocks []PromptBlock, updates
 
 // forwardTurn forwards the in-flight turn's messages onto updates until its
 // ResultMessage, which it returns instead of forwarding.
+//
+// It does not stop at a result the CLI produced for a background-task
+// notification. Resuming a session whose previous process left a background
+// shell command behind (started with run_in_background) makes the CLI report
+// that command as lost with a task_notification and answer it with its own
+// empty, zero-turn result BEFORE it handles the turn just sent; the turn's real
+// reply is the next result on the same stream (observed with claude 2.1.303).
+// Each task_notification allows one such empty result to be skipped, so a turn
+// whose genuine result is empty (a local slash command with no output) still
+// ends at its own result.
 func (c *Client) forwardTurn(ctx context.Context, updates chan<- Message) (ResultMessage, error) {
-	for msg := range c.ReceiveResponse(ctx) {
-		if res, ok := msg.(ResultMessage); ok {
-			return res, nil
+	notifications := 0
+
+	for {
+		sawResult := false
+
+		for msg := range c.ReceiveResponse(ctx) {
+			switch m := msg.(type) {
+			case TaskNotificationMessage:
+				notifications++
+			case ResultMessage:
+				sawResult = true
+
+				if notifications > 0 && isNotificationResult(m) {
+					notifications--
+
+					continue
+				}
+
+				return m, nil
+			}
+
+			select {
+			case updates <- msg:
+			case <-ctx.Done():
+				return ResultMessage{}, ctx.Err()
+			}
 		}
 
-		select {
-		case updates <- msg:
-		case <-ctx.Done():
-			return ResultMessage{}, ctx.Err()
+		if err := ctx.Err(); err != nil {
+			return ResultMessage{}, err
 		}
+
+		if !sawResult {
+			return ResultMessage{}, errors.New("claudecode: cli exited before sending a result message")
+		}
+		// A skipped result ended this read; the turn's own messages follow.
 	}
+}
 
-	return ResultMessage{}, errors.New("claudecode: cli exited before sending a result message")
+// isNotificationResult reports whether res is the empty result the CLI emits
+// for a turn it started by itself to handle a background-task notification:
+// no turns, no stop reason, no output, not an error. A real turn has at least
+// one turn and a stop reason. ModelUsage is deliberately not checked: on a
+// resumed session it repeats the previous turn's usage.
+func isNotificationResult(res ResultMessage) bool {
+	return res.NumTurns == 0 && res.StopReason == "" && !res.IsError && res.Result == ""
 }
 
 // Close cancels the read loop and any in-flight inbound control-request
