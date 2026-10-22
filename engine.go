@@ -437,9 +437,32 @@ func (c *Client) Query(ctx context.Context, text string) error {
 // QueryWithSession sends text as a new user turn on the named session. An
 // empty sessionID uses the CLI's default session.
 func (c *Client) QueryWithSession(_ context.Context, text, sessionID string) error {
+	return c.sendUserTurn(text, sessionID)
+}
+
+// QueryBlocks sends blocks as a new user turn: the multi-block counterpart of
+// Query, for turns that carry images next to text. blocks must be non-empty
+// and each block well-formed (see PromptBlock).
+func (c *Client) QueryBlocks(ctx context.Context, blocks []PromptBlock) error {
+	return c.QueryBlocksWithSession(ctx, blocks, "")
+}
+
+// QueryBlocksWithSession is QueryBlocks on the named session. An empty
+// sessionID uses the CLI's default session.
+func (c *Client) QueryBlocksWithSession(_ context.Context, blocks []PromptBlock, sessionID string) error {
+	if err := validateBlocks(blocks); err != nil {
+		return err
+	}
+
+	return c.sendUserTurn(blocks, sessionID)
+}
+
+// sendUserTurn writes one user turn whose message content is content: a
+// string (the plain-text turn) or a []PromptBlock.
+func (c *Client) sendUserTurn(content any, sessionID string) error {
 	turn := wireUserTurn{
 		Type:    wireTypeUser,
-		Message: wireUserContent{Role: wireTypeUser, Content: text},
+		Message: wireUserContent{Role: wireTypeUser, Content: content},
 	}
 	if sessionID != "" {
 		turn.SessionID = sessionID

@@ -67,7 +67,7 @@ func TestClient_ErrNilAfterCleanClose(t *testing.T) {
 
 	// Wait for the stream to actually end so Err() reflects the final
 	// state, not just the close signal.
-	for range c.ReceiveMessages(context.Background()) { //nolint:revive  // intentional drain until the stream closes, no per-message action needed
+	for range c.ReceiveMessages(context.Background()) { // intentional drain until the stream closes, no per-message action needed
 	}
 
 	if err := c.Err(); err != nil {
@@ -94,11 +94,12 @@ func TestClient_ErrProcessErrorAfterCrash(t *testing.T) {
 		promptDone <- err
 	}()
 
-	for range c.ReceiveMessages(context.Background()) { //nolint:revive  // intentional drain until the stream closes, no per-message action needed
+	for range c.ReceiveMessages(context.Background()) { // intentional drain until the stream closes, no per-message action needed
 	}
 
 	select {
-	case <-promptDone:
+	case err := <-promptDone:
+		_ = err // the test only waits for Prompt to return after the crash
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for Prompt() after crash")
 	}
@@ -134,11 +135,12 @@ func TestClient_ErrResultErrorAfterErroredResultThenCrash(t *testing.T) {
 		promptDone <- err
 	}()
 
-	for range c.ReceiveMessages(context.Background()) { //nolint:revive  // intentional drain until the stream closes, no per-message action needed
+	for range c.ReceiveMessages(context.Background()) { // intentional drain until the stream closes, no per-message action needed
 	}
 
 	select {
-	case <-promptDone:
+	case err := <-promptDone:
+		_ = err // the test only waits for Prompt to return after the crash
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for Prompt() after crash")
 	}
