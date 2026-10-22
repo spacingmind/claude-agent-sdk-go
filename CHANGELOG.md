@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/spacingmind/claude-agent-sdk-go/compare/v0.3.3...v0.4.0) (2026-10-22)
+
+
+### Features
+
+* multi-block user turns with images (QueryBlocks, PromptBlocks) ([#22](https://github.com/spacingmind/claude-agent-sdk-go/issues/22)) ([a9a81d8](https://github.com/spacingmind/claude-agent-sdk-go/commit/a9a81d83257fd741fc1b1a3f791166ca22ce3aba))
+
 ## [0.3.3](https://github.com/spacingmind/claude-agent-sdk-go/compare/v0.3.2...v0.3.3) (2026-08-28)
 
 
