@@ -448,7 +448,7 @@ func TestQueryOnce_RoundTrip(t *testing.T) {
 
 	updates := make(chan Message)
 	go func() {
-		for range updates { //nolint:revive  // intentional drain to unblock QueryOnce's forwarding, no per-message action needed
+		for range updates { // intentional drain to unblock QueryOnce's forwarding, no per-message action needed
 		}
 	}()
 

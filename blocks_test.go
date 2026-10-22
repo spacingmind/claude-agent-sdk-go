@@ -22,7 +22,7 @@ func promptEchoLine(t *testing.T, prompt func(c *Client, updates chan<- Message)
 	updates := make(chan Message)
 
 	go func() {
-		for range updates { //nolint:revive // drain
+		for range updates { // drain
 		}
 	}()
 
