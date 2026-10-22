@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.1](https://github.com/spacingmind/claude-agent-sdk-go/compare/v0.4.0...v0.4.1) (2026-10-22)
+
+
+### Bug Fixes
+
+* Prompt no longer ends at a background-task notification result ([d099ec8](https://github.com/spacingmind/claude-agent-sdk-go/commit/d099ec8a86bb685093597ff84263222b3b438565))
+* Prompt no longer ends at a background-task notification result ([#25](https://github.com/spacingmind/claude-agent-sdk-go/issues/25)) ([948e705](https://github.com/spacingmind/claude-agent-sdk-go/commit/948e705fdace3aa1c23494c62d0df7c0556644af))
+
 ## [0.4.0](https://github.com/spacingmind/claude-agent-sdk-go/compare/v0.3.3...v0.4.0) (2026-10-22)
 
 
