@@ -773,6 +773,44 @@ func runFakeCLI() {
 			"result":     string(dump),
 		})
 
+	case "stale_background_result":
+		// A resumed session with a lost background task: the CLI reports it
+		// with a task_notification, answers that with an empty zero-turn
+		// result, and only then handles the prompt.
+		ackInitialize()
+		stdin.Scan() // consume the prompt line
+		writeLine(map[string]any{
+			"type": "system", "subtype": "task_notification", "task_id": "bg1",
+			"status": "failed", "output_file": "", "summary": "lost",
+			"uuid": "u-n", "session_id": "sess-1",
+		})
+		writeLine(map[string]any{
+			"type": "result", "subtype": "success", "is_error": false,
+			"num_turns": 0, "session_id": "sess-1", "result": "",
+		})
+		writeLine(map[string]any{
+			"type":       "assistant",
+			"session_id": "sess-1",
+			"message": map[string]any{
+				"model":   "claude-fake",
+				"content": []any{map[string]any{"type": "text", "text": "pong"}},
+			},
+		})
+		writeLine(map[string]any{
+			"type": "result", "subtype": "success", "is_error": false,
+			"num_turns": 1, "stop_reason": "end_turn", "session_id": "sess-1", "result": "pong",
+		})
+
+	case "empty_result_no_notification":
+		// A genuinely empty result with no notification before it ends the
+		// turn at that result.
+		ackInitialize()
+		stdin.Scan()
+		writeLine(map[string]any{
+			"type": "result", "subtype": "success", "is_error": false,
+			"num_turns": 0, "session_id": "sess-1", "result": "",
+		})
+
 	case "two_turns":
 		// Two full turn cycles on one subprocess: proves sequential Prompt
 		// calls reuse the same CLI process.
