@@ -288,6 +288,22 @@ func runFakeCLI() {
 			"result":     string(dump),
 		})
 
+	case "echo_prompt":
+		// Reports the first user-turn stdin line verbatim through the result
+		// message, so tests can assert the exact JSON the client wrote for a
+		// text or multi-block turn.
+		ackInitialize()
+		stdin.Scan()
+
+		writeLine(map[string]any{
+			"type":       "result",
+			"subtype":    "success",
+			"is_error":   false,
+			"num_turns":  1,
+			"session_id": "sess-echo",
+			"result":     stdin.Text(),
+		})
+
 	case "capture_stdin":
 		// Records every stdin line verbatim and acks each control_request
 		// with an empty success response. Once CLAUDECODE_FAKE_MAX_LINES

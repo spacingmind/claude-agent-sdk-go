@@ -52,6 +52,20 @@ result, err := client.Prompt(ctx, "fix the failing test in foo_test.go", updates
 
 `Prompt` is a convenience wrapper. The primary API shape is a persistent client: `Query` sends a user turn without waiting for the reply, `ReceiveMessages` exposes the message stream for the client's whole lifetime, and `ReceiveResponse` scopes that stream to a single turn (closing after the next `ResultMessage`).
 
+### Images
+
+A turn can carry images next to text. `QueryBlocks` / `PromptBlocks` are `Query` / `Prompt` for a `[]PromptBlock`:
+
+```go
+blocks := []claudecode.PromptBlock{
+    claudecode.PromptText("what is wrong in this screenshot?"),
+    claudecode.PromptImage("image/png", base64PNG), // standard base64, no "data:" prefix
+}
+result, err := client.PromptBlocks(ctx, blocks, updates)
+```
+
+The CLI takes `image/jpeg`, `image/png`, `image/gif` and `image/webp`; this package does not check the type or size. A malformed block (no blocks, an unknown type, an image without a media type or data) is rejected before anything is written to the CLI.
+
 ```go
 client, err := claudecode.New(worktreePath, claudecode.WithPermissionMode("acceptEdits"))
 if err != nil {

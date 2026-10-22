@@ -1046,9 +1046,12 @@ type wireUserTurn struct {
 	Message   wireUserContent `json:"message"`
 }
 
+// wireUserContent is the message of a user turn. Content is a string for a
+// plain-text turn and a []PromptBlock for a multi-block one; the CLI accepts
+// both on its stream-json input.
 type wireUserContent struct {
 	Role    string `json:"role"`
-	Content string `json:"content"`
+	Content any    `json:"content"`
 }
 
 // Prompt sends text as a new user turn and streams the CLI's response onto
@@ -1068,6 +1071,25 @@ func (c *Client) Prompt(ctx context.Context, text string, updates chan<- Message
 		return ResultMessage{}, err
 	}
 
+	return c.forwardTurn(ctx, updates)
+}
+
+// PromptBlocks is Prompt for a multi-block user turn (text and images): it
+// sends blocks with QueryBlocks and streams the response onto updates exactly
+// as Prompt does, including closing updates before it returns.
+func (c *Client) PromptBlocks(ctx context.Context, blocks []PromptBlock, updates chan<- Message) (ResultMessage, error) {
+	defer close(updates)
+
+	if err := c.QueryBlocks(ctx, blocks); err != nil {
+		return ResultMessage{}, err
+	}
+
+	return c.forwardTurn(ctx, updates)
+}
+
+// forwardTurn forwards the in-flight turn's messages onto updates until its
+// ResultMessage, which it returns instead of forwarding.
+func (c *Client) forwardTurn(ctx context.Context, updates chan<- Message) (ResultMessage, error) {
 	for msg := range c.ReceiveResponse(ctx) {
 		if res, ok := msg.(ResultMessage); ok {
 			return res, nil
