@@ -163,12 +163,9 @@ func TestExitStatus_LoadNoLoss(t *testing.T) {
 	var burners sync.WaitGroup
 
 	for range 2 * runtime.NumCPU() {
-		burners.Add(1)
-
-		go func() {
-			defer burners.Done()
-
+		burners.Go(func() {
 			x := 0
+
 			for {
 				select {
 				case <-stop:
@@ -180,7 +177,7 @@ func TestExitStatus_LoadNoLoss(t *testing.T) {
 					x++
 				}
 			}
-		}()
+		})
 	}
 
 	defer func() {

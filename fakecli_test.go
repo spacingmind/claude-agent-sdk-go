@@ -2,6 +2,7 @@ package claudecode
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -1027,8 +1028,9 @@ func runFakeCLI() {
 		case "burst_orphan":
 			// A descendant inherits stdout and outlives the CLI; its pid goes
 			// to stderr so the test can clean it up.
-			child := exec.Command("sleep", "20")
+			child := exec.CommandContext(context.Background(), "sleep", "20")
 			child.Stdout = os.Stdout
+
 			if err := child.Start(); err != nil {
 				panic(err)
 			}
