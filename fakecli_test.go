@@ -1003,6 +1003,36 @@ func runFakeCLI() {
 		stdin.Scan()
 		os.Exit(0)
 
+	case "burst_exit", "burst_signal", "burst_stderr_exit":
+		// Acknowledge initialize, write burstMessages large assistant
+		// messages back-to-back (more than a pipe buffer's worth), then die
+		// immediately: exit 3, SIGKILL, or exit 4 after writing stderr.
+		ackInitialize()
+
+		pad := strings.Repeat("x", 512)
+
+		for i := range burstMessages {
+			writeLine(map[string]any{
+				"type":       "assistant",
+				"session_id": "sess-1",
+				"message": map[string]any{
+					"model":   "claude-fake",
+					"content": []any{map[string]any{"type": "text", "text": fmt.Sprintf("%d:%s", i, pad)}},
+				},
+			})
+		}
+
+		switch scenario {
+		case "burst_signal":
+			_ = syscall.Kill(os.Getpid(), syscall.SIGKILL)
+			time.Sleep(time.Hour)
+		case "burst_stderr_exit":
+			fmt.Fprint(os.Stderr, "fatal: something broke\n")
+			os.Exit(4)
+		}
+
+		os.Exit(3)
+
 	default:
 		fmt.Fprintf(os.Stderr, "fake cli: unknown scenario %q\n", scenario)
 		os.Exit(1)

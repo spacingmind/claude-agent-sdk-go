@@ -3,7 +3,20 @@ package claudecode
 import (
 	"fmt"
 	"strings"
+	"syscall"
 )
+
+// ExitStatus is the CLI subprocess's exit status, as reported by
+// Client.ExitStatus.
+type ExitStatus struct {
+	// Code is the exit code, or -1 if the process was killed by a signal
+	// or its status was not observed.
+	Code int
+	// Signal is the terminating signal, or 0 if the process exited on its own.
+	Signal syscall.Signal
+	// Stderr is the tail of the CLI's stderr.
+	Stderr string
+}
 
 // CLINotFoundError reports that the claude CLI binary itself could not be
 // found or executed. Path is the binary path the client tried to spawn.
@@ -33,16 +46,24 @@ func (e *CLIConnectionError) Unwrap() error { return e.Err }
 
 // ProcessError reports that the CLI subprocess ended the message stream on
 // its own (crashed or exited) rather than via a clean Client.Close.
-// ExitCode is -1 when it could not be observed. This package does not
-// buffer the CLI's stderr, so Stderr is typically empty.
+// ExitCode is -1 when it could not be observed (including when the process
+// was killed by a signal; see Signal). Stderr is the tail (last few KiB) of
+// the CLI's stderr.
 type ProcessError struct {
 	ExitCode int
-	Stderr   string
-	Err      error
+	// Signal is the signal that terminated the process, or 0 if it exited
+	// normally or the status was not observed.
+	Signal syscall.Signal
+	Stderr string
+	Err    error
 }
 
 func (e *ProcessError) Error() string {
 	msg := fmt.Sprintf("claudecode: CLI process exited unexpectedly (exit code %d)", e.ExitCode)
+	if e.Signal != 0 {
+		msg += fmt.Sprintf(" (signal: %v)", e.Signal)
+	}
+
 	if e.Stderr != "" {
 		msg += ": " + e.Stderr
 	}
