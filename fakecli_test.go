@@ -1038,6 +1038,7 @@ func runFakeCLI() {
 			fmt.Fprintf(os.Stderr, "orphan-pid=%d\n", child.Process.Pid)
 		case "burst_signal":
 			_ = syscall.Kill(os.Getpid(), syscall.SIGKILL)
+
 			time.Sleep(time.Hour)
 		case "burst_stderr_exit":
 			fmt.Fprint(os.Stderr, "fatal: something broke\n")
