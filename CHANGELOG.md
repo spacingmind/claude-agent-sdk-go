@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.2](https://github.com/spacingmind/claude-agent-sdk-go/compare/v0.4.1...v0.4.2) (2026-10-26)
+
+
+### Bug Fixes
+
+* deliver every stdout message and the exit status when the CLI exits ([d775515](https://github.com/spacingmind/claude-agent-sdk-go/commit/d775515b5c39dd8dc07e9c25541d5070938b81e0))
+* deliver every stdout message and the exit status when the CLI exits ([#28](https://github.com/spacingmind/claude-agent-sdk-go/issues/28)) ([161f164](https://github.com/spacingmind/claude-agent-sdk-go/commit/161f16485096d85eb47d1d72064a4310519d7672))
+
 ## [0.4.1](https://github.com/spacingmind/claude-agent-sdk-go/compare/v0.4.0...v0.4.1) (2026-10-22)
 
 
