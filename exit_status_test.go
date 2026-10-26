@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -212,4 +213,38 @@ func TestExitStatus_LoadNoLoss(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+// TestExitStatus_DescendantHoldingStdoutDoesNotHangStream: a background
+// child inheriting the CLI's stdout must not keep the stream (or the exit
+// status) from ending once the CLI itself has exited.
+func TestExitStatus_DescendantHoldingStdoutDoesNotHangStream(t *testing.T) {
+	t.Parallel()
+
+	start := time.Now()
+	n, c := runBurst(t, "burst_orphan")
+	elapsed := time.Since(start)
+
+	pe, ok := errors.AsType[*ProcessError](c.Err())
+	if !ok {
+		t.Fatalf("Err() = %T (%v), want *ProcessError", c.Err(), c.Err())
+	}
+
+	if _, after, found := strings.Cut(pe.Stderr, "orphan-pid="); found {
+		if pid, err := strconv.Atoi(strings.TrimSpace(after)); err == nil {
+			t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+		}
+	}
+
+	if n != burstMessages {
+		t.Fatalf("delivered %d messages, want %d", n, burstMessages)
+	}
+
+	if pe.ExitCode != 3 {
+		t.Fatalf("ExitCode = %d, want 3", pe.ExitCode)
+	}
+
+	if elapsed > 5*time.Second {
+		t.Fatalf("stream took %v to end with a descendant holding stdout, want < 5s", elapsed)
+	}
 }

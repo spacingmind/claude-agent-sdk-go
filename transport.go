@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -39,12 +40,14 @@ type transport struct {
 	lines  chan lineResult
 	closed chan struct{}
 
+	// stdoutR is our read end of the stdout pipe. We own the pipe (rather
+	// than using cmd.StdoutPipe) so cmd.Wait never closes it: the process
+	// is reaped the moment it exits, independent of stdout EOF, while the
+	// reader keeps draining whatever is still buffered in the pipe.
+	stdoutR *os.File
+
 	// readDone closes when the stdout reader goroutine has finished (EOF,
-	// scan error, or transport close). The waiter goroutine blocks on it
-	// before calling cmd.Wait, because Wait closes the stdout pipe and
-	// "it is incorrect to call Wait before all reads from the pipe have
-	// completed": reaping early discards stdout bytes the CLI wrote but we
-	// had not read yet.
+	// scan error, idle timeout after exit, or transport close).
 	readDone chan struct{}
 
 	// stderrTail keeps the last bytes of the CLI's stderr for ProcessError.
@@ -58,6 +61,10 @@ type transport struct {
 	waitDone chan struct{}
 	waitErr  error
 	status   ExitStatus
+
+	// exitedFlag is set once the process is reaped; idleReader then applies
+	// the idle deadline to every subsequent read.
+	exitedFlag atomic.Bool
 
 	closeOnce sync.Once
 }
@@ -123,12 +130,19 @@ func startTransport(worktreePath, cliPath string, args, env []string, stderr io.
 		return nil, &CLIConnectionError{Err: fmt.Errorf("stdin pipe: %w", err)}
 	}
 
-	stdout, err := cmd.StdoutPipe()
+	stdoutR, stdoutW, err := os.Pipe()
 	if err != nil {
 		return nil, &CLIConnectionError{Err: fmt.Errorf("stdout pipe: %w", err)}
 	}
 
-	if err := cmd.Start(); err != nil {
+	cmd.Stdout = stdoutW
+
+	err = cmd.Start()
+	_ = stdoutW.Close() // the child holds its own copy; EOF needs ours closed
+
+	if err != nil {
+		_ = stdoutR.Close()
+
 		if isNotFoundErr(err) {
 			return nil, &CLINotFoundError{Path: cliPath, Err: err}
 		}
@@ -141,6 +155,7 @@ func startTransport(worktreePath, cliPath string, args, env []string, stderr io.
 		stdin:    stdin,
 		lines:    make(chan lineResult),
 		closed:   make(chan struct{}),
+		stdoutR:  stdoutR,
 		readDone: make(chan struct{}),
 		waitDone: make(chan struct{}),
 
@@ -148,7 +163,7 @@ func startTransport(worktreePath, cliPath string, args, env []string, stderr io.
 	}
 
 	t.status = ExitStatus{Code: -1}
-	go t.readLoop(stdout)
+	go t.readLoop()
 	go t.wait()
 
 	return t, nil
@@ -202,16 +217,13 @@ func (t *transport) exitStatus(timeout time.Duration) (ExitStatus, bool) {
 }
 
 // wait is the single reaper for the subprocess: exactly one goroutine may
-// call cmd.Wait. It first waits for the stdout reader to finish (or the
-// transport to be closed) so Wait cannot close the pipe under unread data,
-// then publishes the wait error and exit status so close and ProcessError
+// call cmd.Wait. Because the stdout pipe is ours, Wait returns as soon as
+// the process exits even if a descendant still holds the pipe's write end.
+// After reaping, the reader gets stdoutIdleGrace of idleness (no bytes
+// arriving) to hit EOF; buffered output is always delivered first. It
+// publishes the wait error and exit status so close and ProcessError
 // construction can consume them without racing.
 func (t *transport) wait() {
-	select {
-	case <-t.readDone:
-	case <-t.closed:
-	}
-
 	t.waitErr = t.cmd.Wait()
 	if errors.Is(t.waitErr, exec.ErrWaitDelay) {
 		// The process itself exited; only a lingering pipe holder was cut
@@ -231,14 +243,33 @@ func (t *transport) wait() {
 
 	t.status.Stderr = t.stderrTail.String()
 
+	t.exitedFlag.Store(true)
+	_ = t.stdoutR.SetReadDeadline(time.Now().Add(stdoutIdleGrace))
+
 	close(t.waitDone)
+
+	<-t.readDone
+	_ = t.stdoutR.Close()
 }
 
-func (t *transport) readLoop(stdout io.Reader) {
+// idleReader applies the post-exit idle deadline before each read, so a
+// reader that is slow only because its consumer is slow never times out:
+// the deadline bites only when a read blocks on an empty pipe.
+type idleReader struct{ t *transport }
+
+func (r idleReader) Read(p []byte) (int, error) {
+	if r.t.exitedFlag.Load() {
+		_ = r.t.stdoutR.SetReadDeadline(time.Now().Add(stdoutIdleGrace))
+	}
+
+	return r.t.stdoutR.Read(p)
+}
+
+func (t *transport) readLoop() {
 	defer close(t.lines)
 	defer close(t.readDone)
 
-	scanner := bufio.NewScanner(stdout)
+	scanner := bufio.NewScanner(idleReader{t})
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
 
 	for scanner.Scan() {
@@ -250,7 +281,9 @@ func (t *transport) readLoop(stdout io.Reader) {
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
+	// An idle timeout after the process exited means a descendant kept the
+	// pipe open with nothing more to say: a normal end of stream.
+	if err := scanner.Err(); err != nil && !errors.Is(err, os.ErrDeadlineExceeded) {
 		select {
 		case t.lines <- lineResult{err: err}:
 		case <-t.closed:
@@ -324,6 +357,11 @@ const (
 	// stderrDrainTimeout bounds how long cmd.Wait waits for the stderr
 	// copier after the process exits.
 	stderrDrainTimeout = 2 * time.Second
+
+	// stdoutIdleGrace is how long, after the process exits, the stdout
+	// reader may sit on an empty pipe (a descendant holding the write end
+	// open) before the stream is ended.
+	stdoutIdleGrace = 500 * time.Millisecond
 
 	// exitStatusWait bounds how long the Client waits for the process to be
 	// reaped after the stdout stream ends, before reporting an unknown
