@@ -2,9 +2,11 @@ package claudecode
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strconv"
 	"strings"
@@ -1002,6 +1004,48 @@ func runFakeCLI() {
 		ackInitialize()
 		stdin.Scan()
 		os.Exit(0)
+
+	case "burst_exit", "burst_signal", "burst_stderr_exit", "burst_orphan":
+		// Acknowledge initialize, write burstMessages large assistant
+		// messages back-to-back (more than a pipe buffer's worth), then die
+		// immediately: exit 3, SIGKILL, or exit 4 after writing stderr.
+		ackInitialize()
+
+		pad := strings.Repeat("x", 512)
+
+		for i := range burstMessages {
+			writeLine(map[string]any{
+				"type":       "assistant",
+				"session_id": "sess-1",
+				"message": map[string]any{
+					"model":   "claude-fake",
+					"content": []any{map[string]any{"type": "text", "text": fmt.Sprintf("%d:%s", i, pad)}},
+				},
+			})
+		}
+
+		switch scenario {
+		case "burst_orphan":
+			// A descendant inherits stdout and outlives the CLI; its pid goes
+			// to stderr so the test can clean it up.
+			child := exec.CommandContext(context.Background(), "sleep", "20")
+			child.Stdout = os.Stdout
+
+			if err := child.Start(); err != nil {
+				panic(err)
+			}
+
+			fmt.Fprintf(os.Stderr, "orphan-pid=%d\n", child.Process.Pid)
+		case "burst_signal":
+			_ = syscall.Kill(os.Getpid(), syscall.SIGKILL)
+
+			time.Sleep(time.Hour)
+		case "burst_stderr_exit":
+			fmt.Fprint(os.Stderr, "fatal: something broke\n")
+			os.Exit(4)
+		}
+
+		os.Exit(3)
 
 	default:
 		fmt.Fprintf(os.Stderr, "fake cli: unknown scenario %q\n", scenario)
