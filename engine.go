@@ -127,10 +127,23 @@ func (c *Client) readLoop() { //nolint:gocyclo  // flat per-message-type dispatc
 // exclusive.
 func (c *Client) streamEndError(lastResult *ResultMessage) error {
 	if lastResult != nil && lastResult.IsError {
+		// Reap (bounded) so ExitStatus is available once Err is non-nil.
+		_, _ = c.tr.exitStatus(exitStatusWait)
+
 		return &ResultError{Result: *lastResult, Text: resultErrorText(*lastResult)}
 	}
 
-	return &ProcessError{ExitCode: int(c.tr.exitCode.Load())}
+	st, _ := c.tr.exitStatus(exitStatusWait)
+
+	return &ProcessError{ExitCode: st.Code, Signal: st.Signal, Stderr: st.Stderr}
+}
+
+// ExitStatus reports the CLI subprocess's exit status. ok is false while
+// the process has not been reaped. After the message stream closes on its
+// own (see Err), the status is available whether the stream ended with a
+// ProcessError or a ResultError.
+func (c *Client) ExitStatus() (st ExitStatus, ok bool) {
+	return c.tr.exitStatus(0)
 }
 
 func (c *Client) setStreamErr(err error) {

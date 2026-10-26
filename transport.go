@@ -40,16 +40,31 @@ type transport struct {
 	lines  chan lineResult
 	closed chan struct{}
 
-	// exitCode carries the subprocess's reaped exit code from the waiter
-	// goroutine to readLoop's consumer (the Client), for ProcessError. -1
-	// until the process is reaped.
-	exitCode atomic.Int32
+	// stdoutR is our read end of the stdout pipe. We own the pipe (rather
+	// than using cmd.StdoutPipe) so cmd.Wait never closes it: the process
+	// is reaped the moment it exits, independent of stdout EOF, while the
+	// reader keeps draining whatever is still buffered in the pipe.
+	stdoutR *os.File
+
+	// readDone closes when the stdout reader goroutine has finished (EOF,
+	// scan error, idle timeout after exit, or transport close).
+	readDone chan struct{}
+
+	// stderrTail keeps the last bytes of the CLI's stderr for ProcessError.
+	stderrTail *tailBuffer
 
 	// waitDone closes once the single waiter goroutine has reaped the
-	// subprocess and published waitErr (written before the close, so any
-	// reader after <-waitDone sees it without further synchronization).
+	// subprocess and published waitErr and status (written before the
+	// close, so any reader after <-waitDone sees them without further
+	// synchronization). cmd.Wait also waits for the stderr copier to see
+	// EOF (bounded by cmd.WaitDelay), so stderrTail is complete by then.
 	waitDone chan struct{}
 	waitErr  error
+	status   ExitStatus
+
+	// exitedFlag is set once the process is reaped; idleReader then applies
+	// the idle deadline to every subsequent read.
+	exitedFlag atomic.Bool
 
 	closeOnce sync.Once
 }
@@ -96,21 +111,38 @@ func startTransport(worktreePath, cliPath string, args, env []string, stderr io.
 		cmd.Env = env
 	}
 
+	// Always capture stderr (tee'd to the caller's writer) so ProcessError
+	// can carry its tail. A non-*os.File Stderr makes exec run a copier
+	// goroutine that cmd.Wait joins, so stderr is drained before the exit
+	// status is published; WaitDelay bounds that join if a grandchild
+	// keeps the pipe open.
+	tail := &tailBuffer{max: stderrTailBytes}
 	if stderr != nil {
-		cmd.Stderr = stderr
+		cmd.Stderr = io.MultiWriter(stderr, tail)
+	} else {
+		cmd.Stderr = tail
 	}
+
+	cmd.WaitDelay = stderrDrainTimeout
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, &CLIConnectionError{Err: fmt.Errorf("stdin pipe: %w", err)}
 	}
 
-	stdout, err := cmd.StdoutPipe()
+	stdoutR, stdoutW, err := os.Pipe()
 	if err != nil {
 		return nil, &CLIConnectionError{Err: fmt.Errorf("stdout pipe: %w", err)}
 	}
 
-	if err := cmd.Start(); err != nil {
+	cmd.Stdout = stdoutW
+
+	err = cmd.Start()
+	_ = stdoutW.Close() // the child holds its own copy; EOF needs ours closed
+
+	if err != nil {
+		_ = stdoutR.Close()
+
 		if isNotFoundErr(err) {
 			return nil, &CLINotFoundError{Path: cliPath, Err: err}
 		}
@@ -123,11 +155,15 @@ func startTransport(worktreePath, cliPath string, args, env []string, stderr io.
 		stdin:    stdin,
 		lines:    make(chan lineResult),
 		closed:   make(chan struct{}),
+		stdoutR:  stdoutR,
+		readDone: make(chan struct{}),
 		waitDone: make(chan struct{}),
+
+		stderrTail: tail,
 	}
 
-	t.exitCode.Store(-1)
-	go t.readLoop(stdout)
+	t.status = ExitStatus{Code: -1}
+	go t.readLoop()
 	go t.wait()
 
 	return t, nil
@@ -148,9 +184,6 @@ func isNotFoundErr(err error) bool {
 	return false
 }
 
-// wait is the single reaper for the subprocess: exactly one goroutine may
-// call cmd.Wait. It publishes the wait error and exit code so close and
-// ProcessError construction can consume them without racing.
 // exited reports whether the subprocess has been reaped yet, race-free
 // (cmd.ProcessState must only be touched by the waiter goroutine).
 func (t *transport) exited() bool {
@@ -162,20 +195,81 @@ func (t *transport) exited() bool {
 	}
 }
 
-func (t *transport) wait() {
-	t.waitErr = t.cmd.Wait()
-
-	if t.cmd.ProcessState != nil {
-		t.exitCode.Store(int32(t.cmd.ProcessState.ExitCode())) //nolint:gosec  // process exit codes fit in int32 on every supported OS; ExitCode() itself returns -1 for "not exited/no exit code"
+// exitStatus returns the subprocess's exit status, waiting up to timeout
+// for the waiter goroutine to reap it. ok is false (and Code is -1) if the
+// process had not been reaped by then.
+func (t *transport) exitStatus(timeout time.Duration) (ExitStatus, bool) {
+	select {
+	case <-t.waitDone:
+		return t.status, true
+	default:
 	}
 
-	close(t.waitDone)
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case <-t.waitDone:
+		return t.status, true
+	case <-timer.C:
+		return ExitStatus{Code: -1}, false
+	}
 }
 
-func (t *transport) readLoop(stdout io.Reader) {
-	defer close(t.lines)
+// wait is the single reaper for the subprocess: exactly one goroutine may
+// call cmd.Wait. Because the stdout pipe is ours, Wait returns as soon as
+// the process exits even if a descendant still holds the pipe's write end.
+// After reaping, the reader gets stdoutIdleGrace of idleness (no bytes
+// arriving) to hit EOF; buffered output is always delivered first. It
+// publishes the wait error and exit status so close and ProcessError
+// construction can consume them without racing.
+func (t *transport) wait() {
+	t.waitErr = t.cmd.Wait()
+	if errors.Is(t.waitErr, exec.ErrWaitDelay) {
+		// The process itself exited; only a lingering pipe holder was cut
+		// off. Not a process failure.
+		t.waitErr = nil
+	}
 
-	scanner := bufio.NewScanner(stdout)
+	t.status = ExitStatus{Code: -1}
+
+	if ps := t.cmd.ProcessState; ps != nil {
+		t.status.Code = ps.ExitCode()
+
+		if ws, ok := ps.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+			t.status.Signal = ws.Signal()
+		}
+	}
+
+	t.status.Stderr = t.stderrTail.String()
+
+	t.exitedFlag.Store(true)
+	_ = t.stdoutR.SetReadDeadline(time.Now().Add(stdoutIdleGrace))
+
+	close(t.waitDone)
+
+	<-t.readDone
+	_ = t.stdoutR.Close()
+}
+
+// idleReader applies the post-exit idle deadline before each read, so a
+// reader that is slow only because its consumer is slow never times out:
+// the deadline bites only when a read blocks on an empty pipe.
+type idleReader struct{ t *transport }
+
+func (r idleReader) Read(p []byte) (int, error) {
+	if r.t.exitedFlag.Load() {
+		_ = r.t.stdoutR.SetReadDeadline(time.Now().Add(stdoutIdleGrace))
+	}
+
+	return r.t.stdoutR.Read(p)
+}
+
+func (t *transport) readLoop() {
+	defer close(t.lines)
+	defer close(t.readDone)
+
+	scanner := bufio.NewScanner(idleReader{t})
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
 
 	for scanner.Scan() {
@@ -187,7 +281,9 @@ func (t *transport) readLoop(stdout io.Reader) {
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
+	// An idle timeout after the process exited means a descendant kept the
+	// pipe open with nothing more to say: a normal end of stream.
+	if err := scanner.Err(); err != nil && !errors.Is(err, os.ErrDeadlineExceeded) {
 		select {
 		case t.lines <- lineResult{err: err}:
 		case <-t.closed:
@@ -252,4 +348,49 @@ func (t *transport) close(gracePeriod time.Duration) error {
 	})
 
 	return closeErr
+}
+
+const (
+	// stderrTailBytes bounds the stderr tail kept for ProcessError.
+	stderrTailBytes = 8 * 1024
+
+	// stderrDrainTimeout bounds how long cmd.Wait waits for the stderr
+	// copier after the process exits.
+	stderrDrainTimeout = 2 * time.Second
+
+	// stdoutIdleGrace is how long, after the process exits, the stdout
+	// reader may sit on an empty pipe (a descendant holding the write end
+	// open) before the stream is ended.
+	stdoutIdleGrace = 500 * time.Millisecond
+
+	// exitStatusWait bounds how long the Client waits for the process to be
+	// reaped after the stdout stream ends, before reporting an unknown
+	// exit status.
+	exitStatusWait = 5 * time.Second
+)
+
+// tailBuffer is an io.Writer retaining only the last max bytes written.
+type tailBuffer struct {
+	mu  sync.Mutex
+	max int
+	buf []byte
+}
+
+func (b *tailBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.buf = append(b.buf, p...)
+	if over := len(b.buf) - b.max; over > 0 {
+		b.buf = append([]byte(nil), b.buf[over:]...)
+	}
+
+	return len(p), nil
+}
+
+func (b *tailBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return strings.TrimSpace(string(b.buf))
 }
