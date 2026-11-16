@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.3](https://github.com/spacingmind/claude-agent-sdk-go/compare/v0.4.2...v0.4.3) (2026-11-16)
+
+
+### Features
+
+* Client.PID exposes the CLI subprocess pid ([#32](https://github.com/spacingmind/claude-agent-sdk-go/issues/32)) ([04e7227](https://github.com/spacingmind/claude-agent-sdk-go/commit/04e7227b2809c5c97acac48cc57f19017c542ec9))
+
 ## [0.4.2](https://github.com/spacingmind/claude-agent-sdk-go/compare/v0.4.1...v0.4.2) (2026-10-26)
 
 
