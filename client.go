@@ -1148,6 +1148,24 @@ func isNotificationResult(res ResultMessage) bool {
 	return res.NumTurns == 0 && res.StopReason == "" && !res.IsError && res.Result == ""
 }
 
+// PID is the operating-system process id of the Claude Code CLI subprocess this
+// client started, valid from the moment New returns (the process is started
+// there). It lets a host that spawned the client bind something to that process
+// tree (a per-run socket whose peer check admits only the CLI and its
+// descendants, for example). It returns 0 for a nil client or one with no
+// process. The id is the CLI's own; if the CLI is a wrapper that execs the real
+// binary the pid is unchanged, and if it forks the real CLI as a child the pid
+// is the wrapper's, whose descendants include the real CLI. After Close the
+// process has been reaped and the number may be reused by the operating system:
+// do not signal or trust it then.
+func (c *Client) PID() int {
+	if c == nil || c.tr == nil || c.tr.cmd == nil || c.tr.cmd.Process == nil {
+		return 0
+	}
+
+	return c.tr.cmd.Process.Pid
+}
+
 // Close cancels the read loop and any in-flight inbound control-request
 // handlers, force-fails pending outbound control requests, then tears down
 // the CLI subprocess via the existing stdin-close -> grace period ->
