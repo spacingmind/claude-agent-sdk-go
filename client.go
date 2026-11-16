@@ -1153,11 +1153,17 @@ func isNotificationResult(res ResultMessage) bool {
 // there). It lets a host that spawned the client bind something to that process
 // tree (a per-run socket whose peer check admits only the CLI and its
 // descendants, for example). It returns 0 for a nil client or one with no
-// process. The id is the CLI's own; if the CLI is a wrapper that execs the real
-// binary the pid is unchanged, and if it forks the real CLI as a child the pid
-// is the wrapper's, whose descendants include the real CLI. After Close the
-// process has been reaped and the number may be reused by the operating system:
-// do not signal or trust it then.
+// process.
+//
+// The id is the process New started. If the configured CLI is a wrapper that
+// execs the real binary the pid is the real CLI's; if the wrapper forks the real
+// CLI as a child the pid is the wrapper's, and the real CLI is its descendant
+// only while the wrapper lives. The CLI does not get its own process group (the
+// pid is not a group id): do not signal -pid. The number is valid only while the
+// process has not exited: after ANY exit (a crash as much as Close) the process
+// has been reaped and the number may be reused by the operating system, and
+// PID() keeps returning it. A host that trusts the pid should record the
+// process's start time when it binds, and compare it again on every use.
 func (c *Client) PID() int {
 	if c == nil || c.tr == nil || c.tr.cmd == nil || c.tr.cmd.Process == nil {
 		return 0
